@@ -861,6 +861,158 @@ async function loadTrades() {
 
 let backtestCharts = {};
 
+async function renderRealisticPnl() {
+  // Check if we have price history data
+  const { count } = await sb.from('price_history').select('*', { count: 'exact', head: true });
+  if (!count || count === 0) return '<div class="card" style="margin-top:16px"><div class="no-data">No historical price data. Run the price scraper first.</div></div>';
+
+  let html = `<div style="margin-top:16px">
+    <div style="font-size:0.8em;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #1e1e2e">💰 Realistic Entry Prices (from Polymarket CLOB)</div>`;
+
+  const cityConfigs = [
+    { slug: 'london', name: 'London', color: '#4ade80', conf: 0.83, minCons: 2 },
+    { slug: 'paris', name: 'Paris', color: '#60a5fa', conf: 0.75, minCons: 3 },
+    { slug: 'chicago', name: 'Chicago', color: '#facc15', conf: 0.83, minCons: 3 },
+  ];
+
+  const allCityData = [];
+
+  for (const city of cityConfigs) {
+    // Get distinct target dates with price data
+    const { data: dateRows } = await sb.from('price_history')
+      .select('target_date')
+      .eq('city', city.slug)
+      .order('target_date');
+    if (!dateRows || dateRows.length === 0) continue;
+    const dates = [...new Set(dateRows.map(r => r.target_date))];
+
+    const entries = [];
+
+    for (const td of dates) {
+      // Find winning bucket (highest final price)
+      const { data: latest } = await sb.from('price_history')
+        .select('bucket, price')
+        .eq('city', city.slug).eq('target_date', td)
+        .order('timestamp', { ascending: false })
+        .limit(20);
+      if (!latest) continue;
+
+      const byBucket = {};
+      latest.forEach(p => { if (!byBucket[p.bucket]) byBucket[p.bucket] = p; });
+      const winner = Object.entries(byBucket).sort((a,b) => b[1].price - a[1].price)[0];
+      if (!winner || winner[1].price < 0.8) continue;
+      const winBucket = winner[0];
+
+      // Get price history for winning bucket
+      const { data: hist } = await sb.from('price_history')
+        .select('price, timestamp')
+        .eq('city', city.slug).eq('target_date', td).eq('bucket', winBucket)
+        .order('timestamp');
+      if (!hist || hist.length < 3) continue;
+
+      // Find D-1 prices at 06:00, 11:00, 18:00
+      const tDate = new Date(td + 'T00:00:00Z');
+      const dMinus1 = new Date(tDate); dMinus1.setUTCDate(dMinus1.getUTCDate() - 1);
+      const dm1 = dMinus1.toISOString().slice(0,10);
+
+      const findPrice = (hour) => {
+        const target = new Date(dm1 + 'T' + String(hour).padStart(2,'0') + ':00:00Z');
+        let best = null, bestDist = Infinity;
+        for (const p of hist) {
+          const d = Math.abs(new Date(p.timestamp) - target);
+          if (d < bestDist) { bestDist = d; best = p; }
+        }
+        return (best && bestDist < 3*3600000) ? best.price : null;
+      };
+
+      entries.push({ date: td, bucket: winBucket, p06: findPrice(6), p11: findPrice(11), p18: findPrice(18) });
+    }
+
+    if (entries.length === 0) continue;
+
+    const valid06 = entries.filter(e => e.p06 != null);
+    const valid11 = entries.filter(e => e.p11 != null);
+    const valid18 = entries.filter(e => e.p18 != null);
+    const avg06 = valid06.length ? valid06.reduce((s,e) => s + e.p06, 0) / valid06.length : 0;
+    const avg11 = valid11.length ? valid11.reduce((s,e) => s + e.p11, 0) / valid11.length : 0;
+    const avg18 = valid18.length ? valid18.reduce((s,e) => s + e.p18, 0) / valid18.length : 0;
+
+    // Simulate realistic P&L with consensus win rate
+    const betSize = 20;
+    const simTrades = valid06.length;
+    const simWins = Math.round(simTrades * city.conf);
+    const simLosses = simTrades - simWins;
+    const avgWinProfit = valid06.length ? valid06.reduce((s,e) => s + (Math.floor(betSize/e.p06) * (1 - e.p06)), 0) / valid06.length : 0;
+    const simPnl = (simWins * avgWinProfit) - (simLosses * betSize);
+
+    allCityData.push({ ...city, entries, avg06, avg11, avg18, simTrades, simWins, simLosses, simPnl, avgWinProfit });
+  }
+
+  // Summary cards
+  html += '<div class="grid">';
+  for (const c of allCityData) {
+    const roi = c.simPnl / (c.simTrades * 20) * 100;
+    html += `<div class="card" style="border-left:3px solid ${c.color}">
+      <div style="font-weight:700;margin-bottom:8px">${c.name} <span style="color:#555;font-size:0.8em">(${c.entries.length} markets)</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px">
+        <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
+          <div style="font-size:0.65em;color:#666">@06:00</div>
+          <div style="font-size:1.2em;font-weight:700;color:#4ade80">${(c.avg06*100).toFixed(1)}¢</div>
+          <div style="font-size:0.6em;color:#555">post-00z</div>
+        </div>
+        <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
+          <div style="font-size:0.65em;color:#666">@11:00</div>
+          <div style="font-size:1.2em;font-weight:700;color:#facc15">${(c.avg11*100).toFixed(1)}¢</div>
+          <div style="font-size:0.6em;color:#555">mkt open</div>
+        </div>
+        <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
+          <div style="font-size:0.65em;color:#666">@18:00</div>
+          <div style="font-size:1.2em;font-weight:700;color:#f87171">${(c.avg18*100).toFixed(1)}¢</div>
+          <div style="font-size:0.6em;color:#555">post-12z</div>
+        </div>
+      </div>
+      <div style="background:#0a0a12;border-radius:8px;padding:10px;display:flex;justify-content:space-between">
+        <div><div style="font-size:0.65em;color:#666">SIM P&L ($20/trade)</div><div style="font-size:1.3em;font-weight:700;color:${c.simPnl >= 0 ? '#4ade80' : '#f87171'}">${c.simPnl >= 0 ? '+' : ''}$${c.simPnl.toFixed(0)}</div></div>
+        <div><div style="font-size:0.65em;color:#666">WIN RATE</div><div style="font-size:1.3em;font-weight:700;color:${c.color}">${(c.conf*100).toFixed(0)}%</div></div>
+        <div><div style="font-size:0.65em;color:#666">ROI</div><div style="font-size:1.3em;font-weight:700;color:${roi > 0 ? '#4ade80' : '#f87171'}">${roi >= 0 ? '+' : ''}${roi.toFixed(0)}%</div></div>
+      </div>
+    </div>`;
+  }
+  html += '</div>';
+
+  // Entry time comparison table
+  html += `<div class="card" style="margin-top:12px">
+    <div style="font-size:0.75em;color:#555;margin-bottom:6px">WINNING BUCKET PRICE BY ENTRY TIME (D-1)</div>
+    <table style="width:100%;border-collapse:collapse;font-size:0.8em">
+      <thead><tr style="border-bottom:1px solid #2e2e3e;text-align:left">
+        <th style="padding:6px;color:#666">City</th><th style="padding:6px;color:#666">Date</th><th style="padding:6px;color:#666">Winner</th>
+        <th style="padding:6px;color:#4ade80">@06:00</th><th style="padding:6px;color:#facc15">@11:00</th><th style="padding:6px;color:#f87171">@18:00</th>
+        <th style="padding:6px;color:#666">Spread</th>
+      </tr></thead><tbody>`;
+
+  for (const c of allCityData) {
+    for (const e of c.entries) {
+      const fmt = p => p != null ? `${(p*100).toFixed(1)}¢` : '—';
+      const spread = (e.p06 != null && e.p18 != null) ? `${((e.p18 - e.p06)*100).toFixed(1)}¢` : '—';
+      const spreadColor = (e.p18 != null && e.p06 != null && e.p18 > e.p06) ? '#f87171' : '#4ade80';
+      html += `<tr style="border-bottom:1px solid #1a1a2a">
+        <td style="padding:6px;color:${c.color}">${c.name}</td>
+        <td style="padding:6px;color:#888">${e.date}</td>
+        <td style="padding:6px"><span style="background:#1e1e2e;padding:2px 6px;border-radius:4px">${e.bucket}</span></td>
+        <td style="padding:6px;color:#4ade80;font-weight:600">${fmt(e.p06)}</td>
+        <td style="padding:6px;color:#facc15">${fmt(e.p11)}</td>
+        <td style="padding:6px;color:#f87171">${fmt(e.p18)}</td>
+        <td style="padding:6px;color:${spreadColor}">${spread}</td>
+      </tr>`;
+    }
+  }
+  html += '</tbody></table></div>';
+
+  html += `<div style="font-size:0.75em;color:#444;margin-top:6px;font-style:italic">Based on ${count.toLocaleString()} historical price points from Polymarket CLOB API. Sim uses per-city consensus win rates. 06:00 UTC = cheapest avg entry (right after ECMWF 00z drop).</div>`;
+  html += '</div>';
+  return html;
+}
+
 async function loadBacktest(runId) {
   const area = document.getElementById("backtestArea");
   area.innerHTML = '<div class="card"><div class="loading">Loading backtest data...</div></div>';
@@ -944,6 +1096,9 @@ async function loadBacktest(runId) {
       <div style="height:280px"><canvas id="bt-monthly-chart"></canvas></div>
     </div>
   </div>`;
+
+  // Realistic P&L from historical price data
+  html += await renderRealisticPnl();
 
   // Daily results table
   html += `<div class="card" style="margin-top:16px;overflow-x:auto">
