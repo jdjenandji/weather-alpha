@@ -140,6 +140,7 @@ async function collect() {
         if (edge != null && edge > 0.15 && meetsConsensus) signalType = 'strong';
         else if (edge != null && edge > 0.05 && meetsConsensus) signalType = 'marginal';
         if (!ecmwfAgrees && modelsAgreeing >= 2) console.log(`  ⚠️ ${city.slug} ${dateStr}: ECMWF disagrees (${ecmwfBucket} vs consensus ${consensusBucket}), skipping`);
+        if (signalType === 'strong' && marketPrice != null && marketPrice > parseFloat(process.env.POLY_MAX_ENTRY || 0.50)) console.log(`  💰 ${city.slug} ${dateStr}: market already at ${(marketPrice*100).toFixed(1)}¢ (>${(parseFloat(process.env.POLY_MAX_ENTRY || 0.50)*100)}¢ cap), no edge`);
 
         const { error: sigErr } = await supabase.from('signals').insert({
           city: city.slug,
@@ -154,7 +155,8 @@ async function collect() {
         if (sigErr) console.error(`  signals insert error (${city.slug} ${dateStr}):`, sigErr.message);
 
         // PAPER TRADE on strong signals (per-city thresholds, ECMWF required)
-        if (signalType === 'strong' && marketPrice != null && ecmwfAgrees) {
+        const MAX_ENTRY_PRICE = parseFloat(process.env.POLY_MAX_ENTRY || 0.50);
+        if (signalType === 'strong' && marketPrice != null && ecmwfAgrees && marketPrice <= MAX_ENTRY_PRICE) {
           const maxBet = parseFloat(process.env.POLY_MAX_BET || 20);
 
           // Check if we already traded this city+date
