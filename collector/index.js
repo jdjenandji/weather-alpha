@@ -1,23 +1,11 @@
 import { createClient } from '@supabase/supabase-js';
-let Trader;
-try {
-  Trader = (await import('./trader.js')).Trader;
-} catch (err) {
-  console.warn('[trader] Failed to load trading module:', err.message);
-  Trader = null;
-}
 
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jbqkskwfjbejixyiuqpn.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_6TopOsnadhqteb8xltZiZw_epDDV-cm';
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// Trading config
-const trader = Trader ? new Trader({
-  privateKey: process.env.POLY_PRIVATE_KEY,
-  walletAddress: process.env.POLY_WALLET_ADDRESS,
-  maxBet: process.env.POLY_MAX_BET || 20,
-  enabled: process.env.POLY_ENABLED === 'true',
-}) : { init: async () => {}, initialized: false };
+// Paper trading config
+const MAX_BET = parseFloat(process.env.POLY_MAX_BET || 20);
 
 const CITIES = [
   { name: "Paris", slug: "paris", lat: 49.0097, lon: 2.5479, unit: "C", tz: "Europe/Paris", hist: 0.87 },
@@ -78,12 +66,7 @@ async function fetchMarket(city, dateStr) {
 }
 
 async function collect() {
-  // Initialize trader if configured
-  await trader.init();
-  if (trader.initialized) {
-    const balance = await trader.getBalance();
-    console.log(`[trader] USDC.e balance: ${balance != null ? '$' + balance.toFixed(2) : 'unknown'}`);
-  }
+  console.log(`[paper] Paper trading mode. Max bet: $${MAX_BET}`);
 
   const now = new Date();
   const dates = [];
@@ -160,9 +143,11 @@ async function collect() {
         });
         if (sigErr) console.error(`  signals insert error (${city.slug} ${dateStr}):`, sigErr.message);
 
-        // AUTO-TRADE on strong signals
-        if (signalType === 'strong' && trader.initialized && marketPrice != null) {
-          // Check if we already traded this city+date today
+        // PAPER TRADE on strong signals
+        if (signalType === 'strong' && marketPrice != null) {
+          const maxBet = parseFloat(process.env.POLY_MAX_BET || 20);
+
+          // Check if we already traded this city+date
           const { data: existing } = await supabase
             .from('trades')
             .select('id')
@@ -171,32 +156,25 @@ async function collect() {
             .limit(1);
 
           if (!existing || existing.length === 0) {
-            const result = await trader.placeBuy({
-              citySlug: city.slug,
-              dateStr,
-              bucket: consensusBucket,
-              maxPrice: marketPrice + 0.02, // Willing to pay up to 2¢ above current
-              size: parseFloat(process.env.POLY_MAX_BET || 20),
-            });
+            const price = marketPrice;
+            const shares = Math.floor(maxBet / price);
+            const cost = +(shares * price).toFixed(2);
 
-            if (result) {
-              // Log trade to Supabase
-              await supabase.from('trades').insert({
-                city: city.slug,
-                target_date: dateStr,
-                bucket: result.bucket,
-                price: result.price,
-                shares: result.shares,
-                cost: result.cost,
-                order_id: result.orderId,
-                signal_type: signalType,
-                edge,
-                models_agreeing: modelsAgreeing,
-              }).then(({ error }) => {
-                if (error) console.error('  trades insert error:', error.message);
-                else console.log(`  💰 Trade logged: ${city.slug} ${dateStr} ${result.bucket} @ ${result.price}`);
-              });
-            }
+            const { error: tradeErr } = await supabase.from('trades').insert({
+              city: city.slug,
+              target_date: dateStr,
+              bucket: consensusBucket,
+              price,
+              shares,
+              cost,
+              order_id: 'paper-' + Date.now(),
+              signal_type: signalType,
+              edge,
+              models_agreeing: modelsAgreeing,
+              status: 'open',
+            });
+            if (tradeErr) console.error('  trades insert error:', tradeErr.message);
+            else console.log(`  📝 Paper trade: ${city.slug} ${dateStr} ${consensusBucket} YES @ ${(price*100).toFixed(1)}¢ | ${shares} shares | $${cost}`);
           } else {
             console.log(`  ⏭️ Already traded ${city.slug} ${dateStr}, skipping`);
           }
