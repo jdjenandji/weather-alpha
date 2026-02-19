@@ -512,12 +512,39 @@ async function loadTrades() {
     return;
   }
 
+  // Fetch current market prices for open trades
+  const openTrades = trades.filter(t => t.status === 'open');
+  const currentPrices = {};
+  for (const t of openTrades) {
+    const key = `${t.city}:${t.target_date}`;
+    if (currentPrices[key]) continue;
+    const market = await fetchMarketLive(t.city, t.target_date);
+    if (market) {
+      currentPrices[key] = {};
+      market.forEach(m => currentPrices[key][m.title] = m.price);
+    }
+  }
+
+  // Attach current price + unrealized P&L to each trade
+  for (const t of trades) {
+    if (t.status === 'open') {
+      const key = `${t.city}:${t.target_date}`;
+      t._currentPrice = currentPrices[key]?.[t.bucket] ?? null;
+      t._unrealizedPnl = t._currentPrice != null ? +((t._currentPrice - t.price) * t.shares).toFixed(2) : null;
+    } else {
+      t._currentPrice = null;
+      t._unrealizedPnl = null;
+    }
+  }
+
   // Compute stats
   const totalCost = trades.reduce((s, t) => s + (t.cost || 0), 0);
   const wins = trades.filter(t => t.status === 'won');
   const losses = trades.filter(t => t.status === 'lost');
-  const open = trades.filter(t => t.status === 'open');
-  const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
+  const open = openTrades;
+  const realizedPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
+  const unrealizedPnl = trades.reduce((s, t) => s + (t._unrealizedPnl || 0), 0);
+  const totalPnl = realizedPnl + unrealizedPnl;
   const winRate = (wins.length + losses.length) > 0 ? (wins.length / (wins.length + losses.length) * 100).toFixed(0) : '—';
 
   stats.innerHTML = `
@@ -527,7 +554,9 @@ async function loadTrades() {
     <div class="stat"><div class="stat-label">Lost</div><div class="stat-value edge-negative">${losses.length}</div></div>
     <div class="stat"><div class="stat-label">Win Rate</div><div class="stat-value" style="color:#facc15">${winRate}%</div></div>
     <div class="stat"><div class="stat-label">Deployed</div><div class="stat-value">$${totalCost.toFixed(2)}</div></div>
-    <div class="stat"><div class="stat-label">P&L</div><div class="stat-value ${totalPnl >= 0 ? 'edge-positive' : 'edge-negative'}">${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}</div></div>
+    <div class="stat"><div class="stat-label">Realized</div><div class="stat-value ${realizedPnl >= 0 ? 'edge-positive' : 'edge-negative'}">${realizedPnl >= 0 ? '+' : ''}$${realizedPnl.toFixed(2)}</div></div>
+    <div class="stat"><div class="stat-label">Unrealized</div><div class="stat-value ${unrealizedPnl >= 0 ? 'edge-positive' : 'edge-negative'}">${unrealizedPnl >= 0 ? '+' : ''}$${unrealizedPnl.toFixed(2)}</div></div>
+    <div class="stat"><div class="stat-label">Total P&L</div><div class="stat-value ${totalPnl >= 0 ? 'edge-positive' : 'edge-negative'}">${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}</div></div>
   `;
 
   // Render trade rows
@@ -537,11 +566,11 @@ async function loadTrades() {
       <th style="padding:8px;color:#666">City</th>
       <th style="padding:8px;color:#666">Date</th>
       <th style="padding:8px;color:#666">Bucket</th>
-      <th style="padding:8px;color:#666">Price</th>
+      <th style="padding:8px;color:#666">Entry</th>
+      <th style="padding:8px;color:#666">Now</th>
       <th style="padding:8px;color:#666">Shares</th>
       <th style="padding:8px;color:#666">Cost</th>
       <th style="padding:8px;color:#666">Edge</th>
-      <th style="padding:8px;color:#666">Models</th>
       <th style="padding:8px;color:#666">Status</th>
       <th style="padding:8px;color:#666">P&L</th>
     </tr></thead><tbody>`;
@@ -551,8 +580,15 @@ async function loadTrades() {
     const cityName = CITIES.find(c => c.slug === t.city)?.name || t.city;
     const statusColor = t.status === 'won' ? '#4ade80' : t.status === 'lost' ? '#f87171' : '#60a5fa';
     const statusIcon = t.status === 'won' ? '✅' : t.status === 'lost' ? '❌' : '⏳';
-    const pnl = t.pnl != null ? `${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}` : '—';
-    const pnlColor = t.pnl != null ? (t.pnl >= 0 ? '#4ade80' : '#f87171') : '#555';
+    // P&L: use realized for resolved trades, unrealized for open
+    const displayPnl = t.pnl != null ? t.pnl : t._unrealizedPnl;
+    const pnl = displayPnl != null ? `${displayPnl >= 0 ? '+' : ''}$${displayPnl.toFixed(2)}` : '—';
+    const pnlColor = displayPnl != null ? (displayPnl >= 0 ? '#4ade80' : '#f87171') : '#555';
+
+    // Current price
+    const currentPrice = t._currentPrice != null ? `${(t._currentPrice*100).toFixed(1)}¢` : '—';
+    const priceChange = t._currentPrice != null ? t._currentPrice - t.price : null;
+    const nowColor = priceChange != null ? (priceChange >= 0 ? '#4ade80' : '#f87171') : '#555';
 
     html += `<tr style="border-bottom:1px solid #1a1a2a">
       <td style="padding:8px;color:#888">${time}</td>
@@ -560,10 +596,10 @@ async function loadTrades() {
       <td style="padding:8px;color:#888">${t.target_date}</td>
       <td style="padding:8px"><span style="background:#1e1e2e;padding:2px 8px;border-radius:4px">${t.bucket}</span></td>
       <td style="padding:8px">${(t.price*100).toFixed(1)}¢</td>
+      <td style="padding:8px;color:${nowColor};font-weight:600">${currentPrice}</td>
       <td style="padding:8px">${t.shares?.toFixed(1)}</td>
       <td style="padding:8px">$${t.cost?.toFixed(2)}</td>
       <td style="padding:8px;color:${t.edge > 0.15 ? '#4ade80' : '#facc15'}">${t.edge != null ? '+' + (t.edge*100).toFixed(0) + '%' : '—'}</td>
-      <td style="padding:8px">${t.models_agreeing}/3</td>
       <td style="padding:8px;color:${statusColor}">${statusIcon} ${t.status}</td>
       <td style="padding:8px;color:${pnlColor};font-weight:600">${pnl}</td>
     </tr>`;
