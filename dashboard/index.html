@@ -82,6 +82,7 @@
 <div class="tab-bar">
   <div class="tab active" onclick="switchTab('live')">📡 Live Signals</div>
   <div class="tab" onclick="switchTab('charts')">📈 Delta Charts</div>
+  <div class="tab" onclick="switchTab('trades')">💰 Trades</div>
 </div>
 
 <div id="liveTab">
@@ -92,6 +93,13 @@
 
 <div id="chartsTab" style="display:none">
   <div id="chartArea"></div>
+</div>
+
+<div id="tradesTab" style="display:none">
+  <div id="tradesStats" class="summary-bar" style="margin-bottom:16px"></div>
+  <div id="tradesArea">
+    <div class="card"><div class="loading">Loading trades...</div></div>
+  </div>
 </div>
 
 <script>
@@ -115,7 +123,9 @@ function switchTab(tab) {
   document.querySelector(`.tab[onclick="switchTab('${tab}')"]`).classList.add('active');
   document.getElementById('liveTab').style.display = tab === 'live' ? '' : 'none';
   document.getElementById('chartsTab').style.display = tab === 'charts' ? '' : 'none';
+  document.getElementById('tradesTab').style.display = tab === 'trades' ? '' : 'none';
   if (tab === 'charts') loadCharts();
+  if (tab === 'trades') loadTrades();
 }
 
 function getBucket(val, unit) {
@@ -478,6 +488,89 @@ async function loadCityChart(slug, targetDate, btn) {
       }
     }
   });
+}
+
+async function loadTrades() {
+  const area = document.getElementById("tradesArea");
+  const stats = document.getElementById("tradesStats");
+  area.innerHTML = '<div class="card"><div class="loading">Loading trades...</div></div>';
+
+  const { data: trades, error } = await sb
+    .from('trades')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(100);
+
+  if (error || !trades) {
+    area.innerHTML = '<div class="card"><div style="color:#f87171">Error loading trades</div></div>';
+    return;
+  }
+
+  if (trades.length === 0) {
+    stats.innerHTML = '';
+    area.innerHTML = '<div class="card"><div class="no-data">No trades yet. Bot will auto-trade on strong signals when POLY_ENABLED=true.</div></div>';
+    return;
+  }
+
+  // Compute stats
+  const totalCost = trades.reduce((s, t) => s + (t.cost || 0), 0);
+  const wins = trades.filter(t => t.status === 'won');
+  const losses = trades.filter(t => t.status === 'lost');
+  const open = trades.filter(t => t.status === 'open');
+  const totalPnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
+  const winRate = (wins.length + losses.length) > 0 ? (wins.length / (wins.length + losses.length) * 100).toFixed(0) : '—';
+
+  stats.innerHTML = `
+    <div class="stat"><div class="stat-label">Total Trades</div><div class="stat-value">${trades.length}</div></div>
+    <div class="stat"><div class="stat-label">Open</div><div class="stat-value" style="color:#60a5fa">${open.length}</div></div>
+    <div class="stat"><div class="stat-label">Won</div><div class="stat-value edge-positive">${wins.length}</div></div>
+    <div class="stat"><div class="stat-label">Lost</div><div class="stat-value edge-negative">${losses.length}</div></div>
+    <div class="stat"><div class="stat-label">Win Rate</div><div class="stat-value" style="color:#facc15">${winRate}%</div></div>
+    <div class="stat"><div class="stat-label">Deployed</div><div class="stat-value">$${totalCost.toFixed(2)}</div></div>
+    <div class="stat"><div class="stat-label">P&L</div><div class="stat-value ${totalPnl >= 0 ? 'edge-positive' : 'edge-negative'}">${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}</div></div>
+  `;
+
+  // Render trade rows
+  let html = `<div class="card" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.85em">
+    <thead><tr style="border-bottom:1px solid #2e2e3e;text-align:left">
+      <th style="padding:8px;color:#666">Time</th>
+      <th style="padding:8px;color:#666">City</th>
+      <th style="padding:8px;color:#666">Date</th>
+      <th style="padding:8px;color:#666">Bucket</th>
+      <th style="padding:8px;color:#666">Price</th>
+      <th style="padding:8px;color:#666">Shares</th>
+      <th style="padding:8px;color:#666">Cost</th>
+      <th style="padding:8px;color:#666">Edge</th>
+      <th style="padding:8px;color:#666">Models</th>
+      <th style="padding:8px;color:#666">Status</th>
+      <th style="padding:8px;color:#666">P&L</th>
+    </tr></thead><tbody>`;
+
+  for (const t of trades) {
+    const time = new Date(t.created_at).toLocaleString('en-GB', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'UTC' });
+    const cityName = CITIES.find(c => c.slug === t.city)?.name || t.city;
+    const statusColor = t.status === 'won' ? '#4ade80' : t.status === 'lost' ? '#f87171' : '#60a5fa';
+    const statusIcon = t.status === 'won' ? '✅' : t.status === 'lost' ? '❌' : '⏳';
+    const pnl = t.pnl != null ? `${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}` : '—';
+    const pnlColor = t.pnl != null ? (t.pnl >= 0 ? '#4ade80' : '#f87171') : '#555';
+
+    html += `<tr style="border-bottom:1px solid #1a1a2a">
+      <td style="padding:8px;color:#888">${time}</td>
+      <td style="padding:8px;font-weight:600">${cityName}</td>
+      <td style="padding:8px;color:#888">${t.target_date}</td>
+      <td style="padding:8px"><span style="background:#1e1e2e;padding:2px 8px;border-radius:4px">${t.bucket}</span></td>
+      <td style="padding:8px">${(t.price*100).toFixed(1)}¢</td>
+      <td style="padding:8px">${t.shares?.toFixed(1)}</td>
+      <td style="padding:8px">$${t.cost?.toFixed(2)}</td>
+      <td style="padding:8px;color:${t.edge > 0.15 ? '#4ade80' : '#facc15'}">${t.edge != null ? '+' + (t.edge*100).toFixed(0) + '%' : '—'}</td>
+      <td style="padding:8px">${t.models_agreeing}/3</td>
+      <td style="padding:8px;color:${statusColor}">${statusIcon} ${t.status}</td>
+      <td style="padding:8px;color:${pnlColor};font-weight:600">${pnl}</td>
+    </tr>`;
+  }
+
+  html += '</tbody></table></div>';
+  area.innerHTML = html;
 }
 
 // Init
