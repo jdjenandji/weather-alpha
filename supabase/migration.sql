@@ -122,6 +122,19 @@ create table if not exists backtest_summary (
   created_at timestamptz not null default now()
 );
 
+-- Historical price timeseries from Polymarket CLOB
+create table if not exists price_history (
+  id bigint generated always as identity primary key,
+  city text not null,
+  target_date date not null,
+  bucket text not null,
+  token_id text not null,
+  price real not null,
+  timestamp timestamptz not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_price_history_lookup on price_history (city, target_date, bucket, timestamp);
+
 -- RLS
 alter table forecasts enable row level security;
 alter table market_prices enable row level security;
@@ -149,3 +162,7 @@ create policy "anon_insert_backtest_results" on backtest_results for insert to a
 alter table backtest_summary enable row level security;
 create policy "anon_select_backtest_summary" on backtest_summary for select to anon using (true);
 create policy "anon_insert_backtest_summary" on backtest_summary for insert to anon with check (true);
+
+alter table price_history enable row level security;
+create policy "anon_select_price_history" on price_history for select to anon using (true);
+create policy "anon_insert_price_history" on price_history for insert to anon with check (true);
