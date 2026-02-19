@@ -211,12 +211,20 @@ function renderCard(city, dateStr, forecasts, market) {
 
   const now = new Date();
   const ts = now.toLocaleString('en-GB', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' }) + ' UTC';
+  const marketOdds = targetMarket ? `${(targetMarket.price*100).toFixed(1)}¢` : '—';
+  const topMarket = market?.[0];
+  const topOdds = topMarket ? `${topMarket.title} @ ${(topMarket.price*100).toFixed(1)}¢` : '';
 
   let html = `<div class="card">
     <div class="card-header"><span class="city-name">${city.name}</span><span class="date-badge">${dateStr}</span></div>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
       <span class="signal ${signalClass}" style="margin-bottom:0">${signalText}</span>
       <span style="font-size:0.7em;color:#555">🕐 ${ts}</span>
+    </div>
+    <div style="display:flex;gap:12px;margin-bottom:10px;padding:8px;background:#0a0a12;border-radius:8px;font-size:0.85em">
+      <div style="flex:1"><span style="color:#666;font-size:0.8em">CONSENSUS</span><div style="font-weight:700;color:${agreement>=2?'#4ade80':'#555'}">${consensus || 'None'}</div></div>
+      <div style="flex:1"><span style="color:#666;font-size:0.8em">MARKET ODDS</span><div style="font-weight:700;color:#60a5fa">${agreement>=2 ? marketOdds : '—'}</div></div>
+      <div style="flex:1"><span style="color:#666;font-size:0.8em">FAVORITE</span><div style="font-weight:700;color:#facc15">${topOdds || '—'}</div></div>
     </div>
     <div class="models">`;
   for (const [model, val] of models) {
