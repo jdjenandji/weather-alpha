@@ -75,6 +75,53 @@ create table if not exists trade_alerts (
 );
 create index if not exists idx_trade_alerts_lookup on trade_alerts (trade_id, created_at);
 
+-- Backtest results
+create table if not exists backtest_results (
+  id bigint generated always as identity primary key,
+  run_id text not null,
+  city text not null,
+  target_date date not null,
+  actual_temp real,
+  actual_bucket text,
+  ecmwf_temp real,
+  ecmwf_bucket text,
+  ecmwf_error real,
+  ecmwf_match boolean,
+  gfs_temp real,
+  gfs_bucket text,
+  gfs_error real,
+  gfs_match boolean,
+  icon_temp real,
+  icon_bucket text,
+  icon_error real,
+  icon_match boolean,
+  consensus_bucket text,
+  consensus_count int,
+  consensus_correct boolean,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_backtest_lookup on backtest_results (run_id, city, target_date);
+
+create table if not exists backtest_summary (
+  id bigint generated always as identity primary key,
+  run_id text not null,
+  city text not null,
+  days int not null,
+  ecmwf_match_rate real,
+  ecmwf_mae real,
+  gfs_match_rate real,
+  gfs_mae real,
+  icon_match_rate real,
+  icon_mae real,
+  consensus2_rate real,
+  consensus2_correct int,
+  consensus2_total int,
+  consensus3_rate real,
+  consensus3_correct int,
+  consensus3_total int,
+  created_at timestamptz not null default now()
+);
+
 -- RLS
 alter table forecasts enable row level security;
 alter table market_prices enable row level security;
@@ -95,3 +142,10 @@ create policy "anon_update_trades" on trades for update to anon using (true);
 alter table trade_alerts enable row level security;
 create policy "anon_select_trade_alerts" on trade_alerts for select to anon using (true);
 create policy "anon_insert_trade_alerts" on trade_alerts for insert to anon with check (true);
+
+alter table backtest_results enable row level security;
+create policy "anon_select_backtest_results" on backtest_results for select to anon using (true);
+create policy "anon_insert_backtest_results" on backtest_results for insert to anon with check (true);
+alter table backtest_summary enable row level security;
+create policy "anon_select_backtest_summary" on backtest_summary for select to anon using (true);
+create policy "anon_insert_backtest_summary" on backtest_summary for insert to anon with check (true);

@@ -83,6 +83,7 @@
   <div class="tab active" onclick="switchTab('live')">📡 Live Signals</div>
   <div class="tab" onclick="switchTab('charts')">📈 Delta Charts</div>
   <div class="tab" onclick="switchTab('trades')">💰 Trades</div>
+  <div class="tab" onclick="switchTab('backtest')">📊 Backtest</div>
 </div>
 
 <div id="liveTab">
@@ -93,6 +94,10 @@
 
 <div id="chartsTab" style="display:none">
   <div id="chartArea"></div>
+</div>
+
+<div id="backtestTab" style="display:none">
+  <div id="backtestArea"><div class="card"><div class="loading">Loading...</div></div></div>
 </div>
 
 <div id="tradesTab" style="display:none">
@@ -124,8 +129,10 @@ function switchTab(tab) {
   document.getElementById('liveTab').style.display = tab === 'live' ? '' : 'none';
   document.getElementById('chartsTab').style.display = tab === 'charts' ? '' : 'none';
   document.getElementById('tradesTab').style.display = tab === 'trades' ? '' : 'none';
+  document.getElementById('backtestTab').style.display = tab === 'backtest' ? '' : 'none';
   if (tab === 'charts') loadCharts();
   if (tab === 'trades') loadTrades();
+  if (tab === 'backtest') loadBacktest();
 }
 
 function getBucket(val, unit) {
@@ -642,6 +649,225 @@ async function loadTrades() {
   }
 
   area.innerHTML = html;
+}
+
+let backtestCharts = {};
+
+async function loadBacktest(runId) {
+  const area = document.getElementById("backtestArea");
+  area.innerHTML = '<div class="card"><div class="loading">Loading backtest data...</div></div>';
+
+  // Get available runs
+  const { data: summaries } = await sb
+    .from('backtest_summary')
+    .select('*')
+    .order('created_at', { ascending: false });
+
+  if (!summaries || summaries.length === 0) {
+    area.innerHTML = '<div class="card"><div class="no-data">No backtest data yet. Run the backtest script first.</div></div>';
+    return;
+  }
+
+  // Get unique run IDs
+  const runs = [...new Set(summaries.map(s => s.run_id))];
+  const selectedRun = runId || runs[0];
+  const runSummaries = summaries.filter(s => s.run_id === selectedRun);
+
+  // Fetch daily results for this run
+  const { data: results } = await sb
+    .from('backtest_results')
+    .select('*')
+    .eq('run_id', selectedRun)
+    .order('target_date', { ascending: true });
+
+  let html = '';
+
+  // Run selector
+  html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+    <div style="font-size:1.1em;font-weight:600">Backtest: ${selectedRun}</div>
+    <select onchange="loadBacktest(this.value)" style="background:#1e1e2e;color:#e0e0e0;border:1px solid #2e2e3e;padding:6px 12px;border-radius:8px;font-size:0.85em">
+      ${runs.map(r => `<option value="${r}" ${r===selectedRun?'selected':''}>${r}</option>`).join('')}
+    </select>
+  </div>`;
+
+  // Summary cards
+  html += '<div class="grid">';
+  const cityColors = { paris: '#60a5fa', london: '#4ade80', chicago: '#facc15', 'buenos-aires': '#fb923c' };
+
+  for (const s of runSummaries) {
+    const cityName = CITIES.find(c => c.slug === s.city)?.name || s.city;
+    const col = cityColors[s.city] || '#888';
+
+    html += `<div class="card">
+      <div class="card-header">
+        <span class="city-name" style="border-left:3px solid ${col};padding-left:8px">${cityName}</span>
+        <span class="date-badge">${s.days} days</span>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <div style="flex:1;background:#0a0a12;border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:0.7em;color:#666;text-transform:uppercase">≥2/3 Consensus</div>
+          <div style="font-size:1.6em;font-weight:700;color:${s.consensus2_rate > 0.75 ? '#4ade80' : s.consensus2_rate > 0.6 ? '#facc15' : '#f87171'}">${(s.consensus2_rate*100).toFixed(0)}%</div>
+          <div style="font-size:0.75em;color:#555">${s.consensus2_correct}/${s.consensus2_total}</div>
+        </div>
+        <div style="flex:1;background:#0a0a12;border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:0.7em;color:#666;text-transform:uppercase">3/3 Consensus</div>
+          <div style="font-size:1.6em;font-weight:700;color:${s.consensus3_rate > 0.8 ? '#4ade80' : s.consensus3_rate > 0.65 ? '#facc15' : '#f87171'}">${s.consensus3_total > 0 ? (s.consensus3_rate*100).toFixed(0) : '—'}%</div>
+          <div style="font-size:0.75em;color:#555">${s.consensus3_correct}/${s.consensus3_total}</div>
+        </div>
+      </div>
+
+      <div style="font-size:0.75em;color:#555;margin-bottom:6px">MODEL ACCURACY</div>
+      ${renderModelBar('ECMWF', s.ecmwf_match_rate, s.ecmwf_mae, '#4ade80')}
+      ${renderModelBar('GFS', s.gfs_match_rate, s.gfs_mae, '#60a5fa')}
+      ${renderModelBar('ICON', s.icon_match_rate, s.icon_mae, '#facc15')}
+    </div>`;
+  }
+  html += '</div>';
+
+  // Charts section
+  html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+    <div class="chart-container">
+      <div class="chart-title" style="margin-bottom:12px">Model Accuracy by City</div>
+      <div style="height:280px"><canvas id="bt-accuracy-chart"></canvas></div>
+    </div>
+    <div class="chart-container">
+      <div class="chart-title" style="margin-bottom:12px">Monthly Consensus Accuracy</div>
+      <div style="height:280px"><canvas id="bt-monthly-chart"></canvas></div>
+    </div>
+  </div>`;
+
+  // Daily results table
+  html += `<div class="card" style="margin-top:16px;overflow-x:auto">
+    <div style="font-size:0.75em;color:#555;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Daily Results (${results?.length || 0} days)</div>
+    <div style="max-height:500px;overflow-y:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:0.8em">
+      <thead style="position:sticky;top:0;background:#13131a"><tr style="border-bottom:1px solid #2e2e3e;text-align:left">
+        <th style="padding:6px;color:#666">Date</th>
+        <th style="padding:6px;color:#666">City</th>
+        <th style="padding:6px;color:#666">Actual</th>
+        <th style="padding:6px;color:#666">ECMWF</th>
+        <th style="padding:6px;color:#666">GFS</th>
+        <th style="padding:6px;color:#666">ICON</th>
+        <th style="padding:6px;color:#666">Consensus</th>
+        <th style="padding:6px;color:#666">Result</th>
+      </tr></thead><tbody>`;
+
+  for (const r of (results || []).reverse()) {
+    const cityName = CITIES.find(c => c.slug === r.city)?.name || r.city;
+    const ecmwfColor = r.ecmwf_match ? '#4ade80' : '#f87171';
+    const gfsColor = r.gfs_match ? '#4ade80' : '#f87171';
+    const iconColor = r.icon_match ? '#4ade80' : '#f87171';
+    const consColor = r.consensus_correct ? '#4ade80' : '#f87171';
+    const consIcon = r.consensus_correct ? '✅' : '❌';
+
+    html += `<tr style="border-bottom:1px solid #1a1a2a">
+      <td style="padding:6px;color:#888">${r.target_date}</td>
+      <td style="padding:6px">${cityName}</td>
+      <td style="padding:6px;font-weight:600">${r.actual_temp?.toFixed(1)} → ${r.actual_bucket}</td>
+      <td style="padding:6px;color:${ecmwfColor}">${r.ecmwf_temp?.toFixed(1)} → ${r.ecmwf_bucket}</td>
+      <td style="padding:6px;color:${gfsColor}">${r.gfs_temp?.toFixed(1)} → ${r.gfs_bucket}</td>
+      <td style="padding:6px;color:${iconColor}">${r.icon_temp?.toFixed(1)} → ${r.icon_bucket}</td>
+      <td style="padding:6px"><span style="background:${r.consensus_count >= 3 ? '#0f3d0f' : r.consensus_count >= 2 ? '#3d3d0f' : '#2d1215'};color:${r.consensus_count >= 3 ? '#4ade80' : r.consensus_count >= 2 ? '#facc15' : '#f87171'};padding:2px 8px;border-radius:4px">${r.consensus_bucket} (${r.consensus_count}/3)</span></td>
+      <td style="padding:6px;color:${consColor}">${consIcon}</td>
+    </tr>`;
+  }
+  html += '</tbody></table></div></div>';
+
+  area.innerHTML = html;
+
+  // Render charts
+  renderAccuracyChart(runSummaries);
+  renderMonthlyChart(results || []);
+}
+
+function renderModelBar(name, rate, mae, color) {
+  const pct = rate != null ? (rate * 100).toFixed(0) : 0;
+  const maeStr = mae != null ? mae.toFixed(2) : '—';
+  return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+    <span style="width:50px;font-size:0.8em;color:#888">${name}</span>
+    <div style="flex:1;height:8px;background:#1a1a2a;border-radius:4px;overflow:hidden">
+      <div style="height:100%;width:${pct}%;background:${color};border-radius:4px;transition:width 0.5s"></div>
+    </div>
+    <span style="width:35px;font-size:0.8em;color:${color};text-align:right;font-weight:600">${pct}%</span>
+    <span style="width:50px;font-size:0.7em;color:#555;text-align:right">MAE ${maeStr}</span>
+  </div>`;
+}
+
+function renderAccuracyChart(summaries) {
+  if (backtestCharts['accuracy']) backtestCharts['accuracy'].destroy();
+  const canvas = document.getElementById('bt-accuracy-chart');
+  if (!canvas) return;
+
+  const cities = summaries.map(s => CITIES.find(c => c.slug === s.city)?.name || s.city);
+  backtestCharts['accuracy'] = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: cities,
+      datasets: [
+        { label: 'ECMWF', data: summaries.map(s => (s.ecmwf_match_rate*100).toFixed(1)), backgroundColor: '#4ade80', borderRadius: 4 },
+        { label: 'GFS', data: summaries.map(s => (s.gfs_match_rate*100).toFixed(1)), backgroundColor: '#60a5fa', borderRadius: 4 },
+        { label: 'ICON', data: summaries.map(s => (s.icon_match_rate*100).toFixed(1)), backgroundColor: '#facc15', borderRadius: 4 },
+        { label: '≥2/3 Cons', data: summaries.map(s => (s.consensus2_rate*100).toFixed(1)), backgroundColor: '#a78bfa', borderRadius: 4 },
+        { label: '3/3 Cons', data: summaries.map(s => s.consensus3_total > 0 ? (s.consensus3_rate*100).toFixed(1) : 0), backgroundColor: '#fb923c', borderRadius: 4 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#888', font: { size: 10 } } } },
+      scales: {
+        x: { ticks: { color: '#555' }, grid: { display: false } },
+        y: { min: 0, max: 100, ticks: { color: '#555', callback: v => v + '%' }, grid: { color: '#1a1a2a' } }
+      }
+    }
+  });
+}
+
+function renderMonthlyChart(results) {
+  if (backtestCharts['monthly']) backtestCharts['monthly'].destroy();
+  const canvas = document.getElementById('bt-monthly-chart');
+  if (!canvas) return;
+
+  // Group by city+month
+  const byCityMonth = {};
+  results.forEach(r => {
+    if (r.consensus_count < 2) return;
+    const month = r.target_date.slice(0, 7);
+    const key = `${r.city}:${month}`;
+    if (!byCityMonth[key]) byCityMonth[key] = { city: r.city, month, correct: 0, total: 0 };
+    byCityMonth[key].total++;
+    if (r.consensus_correct) byCityMonth[key].correct++;
+  });
+
+  const months = [...new Set(Object.values(byCityMonth).map(v => v.month))].sort();
+  const cityColors = { paris: '#60a5fa', london: '#4ade80', chicago: '#facc15', 'buenos-aires': '#fb923c' };
+
+  const datasets = CITIES.map(city => ({
+    label: city.name,
+    data: months.map(m => {
+      const v = byCityMonth[`${city.slug}:${m}`];
+      return v && v.total > 0 ? +((v.correct / v.total) * 100).toFixed(1) : null;
+    }),
+    borderColor: cityColors[city.slug],
+    backgroundColor: cityColors[city.slug] + '33',
+    borderWidth: 2,
+    pointRadius: 4,
+    tension: 0.3,
+    spanGaps: true,
+  }));
+
+  backtestCharts['monthly'] = new Chart(canvas, {
+    type: 'line',
+    data: { labels: months, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#888', font: { size: 10 } } } },
+      scales: {
+        x: { ticks: { color: '#555' }, grid: { color: '#1a1a2a' } },
+        y: { min: 0, max: 100, ticks: { color: '#555', callback: v => v + '%' }, grid: { color: '#1a1a2a' } }
+      }
+    }
+  });
 }
 
 // Init
