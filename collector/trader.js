@@ -22,9 +22,16 @@ export class Trader {
     }
 
     try {
-      // Dynamic import of the SDK
-      const { ClobClient } = await import('@polymarket/clob-client');
-      const { Wallet } = await import('ethers');
+      // Dynamic import — these are heavy deps
+      let ClobClient, Wallet;
+      try {
+        ClobClient = (await import('@polymarket/clob-client')).ClobClient;
+        Wallet = (await import('ethers')).Wallet;
+      } catch (e) {
+        console.error('[trader] SDK import failed:', e.message);
+        console.error('[trader] Make sure @polymarket/clob-client and ethers@5 are installed');
+        return false;
+      }
 
       const signer = new Wallet(this.privateKey);
       

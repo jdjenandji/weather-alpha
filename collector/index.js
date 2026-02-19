@@ -1,17 +1,23 @@
 import { createClient } from '@supabase/supabase-js';
-import { Trader } from './trader.js';
+let Trader;
+try {
+  Trader = (await import('./trader.js')).Trader;
+} catch (err) {
+  console.warn('[trader] Failed to load trading module:', err.message);
+  Trader = null;
+}
 
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jbqkskwfjbejixyiuqpn.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_6TopOsnadhqteb8xltZiZw_epDDV-cm';
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // Trading config
-const trader = new Trader({
+const trader = Trader ? new Trader({
   privateKey: process.env.POLY_PRIVATE_KEY,
   walletAddress: process.env.POLY_WALLET_ADDRESS,
   maxBet: process.env.POLY_MAX_BET || 20,
   enabled: process.env.POLY_ENABLED === 'true',
-});
+}) : { init: async () => {}, initialized: false };
 
 const CITIES = [
   { name: "Paris", slug: "paris", lat: 49.0097, lon: 2.5479, unit: "C", tz: "Europe/Paris", hist: 0.87 },
