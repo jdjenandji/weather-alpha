@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Weather Alpha Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', system-ui, sans-serif; background: #0a0a0f; color: #e0e0e0; padding: 20px; }
+  h1 { font-size: 1.4em; color: #fff; margin-bottom: 4px; }
+  .subtitle { color: #666; font-size: 0.85em; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .card { background: #13131a; border: 1px solid #1e1e2e; border-radius: 12px; padding: 16px; }
+  .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .city-name { font-weight: 600; font-size: 1.1em; }
+  .date-badge { background: #1e1e2e; padding: 3px 10px; border-radius: 20px; font-size: 0.8em; color: #888; }
+  .signal { padding: 4px 10px; border-radius: 6px; font-size: 0.8em; font-weight: 600; display: inline-block; margin-bottom: 10px; }
+  .signal-strong { background: #0f3d0f; color: #4ade80; border: 1px solid #166534; }
+  .signal-marginal { background: #3d3d0f; color: #facc15; border: 1px solid #854d0e; }
+  .signal-skip { background: #2d1215; color: #f87171; border: 1px solid #7f1d1d; }
+  .models { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+  .model-box { background: #0a0a12; border-radius: 8px; padding: 8px; text-align: center; }
+  .model-name { font-size: 0.7em; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
+  .model-val { font-size: 1.2em; font-weight: 700; margin-top: 2px; }
+  .model-bucket { font-size: 0.75em; color: #888; }
+  .agree { color: #4ade80; }
+  .disagree { color: #f87171; }
+  .market-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; border-bottom: 1px solid #1a1a2a; font-size: 0.85em; }
+  .market-row:last-child { border: none; }
+  .market-row.target { background: #0f2d0f; margin: 0 -8px; padding: 4px 8px; border-radius: 4px; }
+  .bar-container { width: 80px; height: 6px; background: #1a1a2a; border-radius: 3px; overflow: hidden; }
+  .bar { height: 100%; border-radius: 3px; }
+  .bar-green { background: #4ade80; }
+  .bar-yellow { background: #facc15; }
+  .bar-gray { background: #444; }
+  .edge-box { margin-top: 10px; padding: 10px; background: #0a0a12; border-radius: 8px; display: flex; justify-content: space-between; gap: 12px; }
+  .edge-label { font-size: 0.75em; color: #666; }
+  .edge-value { font-size: 1.1em; font-weight: 700; }
+  .edge-positive { color: #4ade80; }
+  .edge-negative { color: #f87171; }
+  .summary-bar { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+  .stat { background: #13131a; border: 1px solid #1e1e2e; border-radius: 10px; padding: 12px 20px; min-width: 120px; }
+  .stat-label { font-size: 0.7em; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-value { font-size: 1.4em; font-weight: 700; margin-top: 2px; }
+  .refresh-btn { background: #1e1e2e; border: 1px solid #2e2e3e; color: #888; padding: 6px 16px; border-radius: 8px; cursor: pointer; font-size: 0.85em; }
+  .refresh-btn:hover { background: #2e2e3e; color: #fff; }
+  .loading { color: #666; font-style: italic; }
+  #lastUpdate { color: #444; font-size: 0.8em; }
+  .section-title { font-size: 1em; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 1px; margin: 28px 0 12px; padding-bottom: 6px; border-bottom: 1px solid #1e1e2e; }
+  .chart-container { background: #13131a; border: 1px solid #1e1e2e; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .chart-title { font-weight: 600; font-size: 1em; }
+  .date-selector { display: flex; gap: 6px; }
+  .date-btn { background: #1e1e2e; border: 1px solid #2e2e3e; color: #888; padding: 3px 10px; border-radius: 6px; cursor: pointer; font-size: 0.8em; }
+  .date-btn.active { background: #0f3d0f; color: #4ade80; border-color: #166534; }
+  .chart-wrap { height: 250px; position: relative; }
+  .no-data { color: #555; font-size: 0.85em; text-align: center; padding: 60px 0; }
+  .tab-bar { display: flex; gap: 8px; margin-bottom: 16px; }
+  .tab { background: #1e1e2e; border: 1px solid #2e2e3e; color: #888; padding: 6px 16px; border-radius: 8px; cursor: pointer; font-size: 0.85em; }
+  .tab.active { background: #0f3d0f; color: #4ade80; border-color: #166534; }
+</style>
+</head>
+<body>
+
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 4px;">
+  <h1>🌡️ Weather Alpha</h1>
+  <button class="refresh-btn" onclick="refresh()">↻ Refresh</button>
+</div>
+<div class="subtitle">ECMWF IFS + Multi-Model Consensus · Polymarket Weather Markets · Tier 1 Only <span id="lastUpdate"></span></div>
+
+<div class="summary-bar" id="summaryBar">
+  <div class="stat"><div class="stat-label">Signals</div><div class="stat-value" id="signalCount">—</div></div>
+  <div class="stat"><div class="stat-label">Strong</div><div class="stat-value edge-positive" id="strongCount">—</div></div>
+  <div class="stat"><div class="stat-label">Marginal</div><div class="stat-value" style="color:#facc15" id="marginalCount">—</div></div>
+  <div class="stat"><div class="stat-label">Best Edge</div><div class="stat-value edge-positive" id="bestEdge">—</div></div>
+  <div class="stat"><div class="stat-label">Data Points</div><div class="stat-value" id="dataPoints">—</div></div>
+</div>
+
+<div class="tab-bar">
+  <div class="tab active" onclick="switchTab('live')">📡 Live Signals</div>
+  <div class="tab" onclick="switchTab('charts')">📈 Delta Charts</div>
+</div>
+
+<div id="liveTab">
+  <div class="grid" id="dashboard">
+    <div class="card"><div class="loading">Loading...</div></div>
+  </div>
+</div>
+
+<div id="chartsTab" style="display:none">
+  <div id="chartArea"></div>
+</div>
+
+<script>
+const SUPABASE_URL = 'https://jbqkskwfjbejixyiuqpn.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_6TopOsnadhqteb8xltZiZw_epDDV-cm';
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const CITIES = [
+  { name: "Paris", slug: "paris", unit: "C", hist: 0.87 },
+  { name: "London", slug: "london", unit: "C", hist: 0.80 },
+  { name: "Chicago", slug: "chicago", unit: "F", hist: 0.83 },
+  { name: "Buenos Aires", slug: "buenos-aires", unit: "C", hist: 0.83 },
+];
+
+const charts = {};
+let currentTab = 'live';
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelector(`.tab[onclick="switchTab('${tab}')"]`).classList.add('active');
+  document.getElementById('liveTab').style.display = tab === 'live' ? '' : 'none';
+  document.getElementById('chartsTab').style.display = tab === 'charts' ? '' : 'none';
+  if (tab === 'charts') loadCharts();
+}
+
+function getBucket(val, unit) {
+  if (unit === "F") { const b = Math.floor(val / 2) * 2; return `${b} to ${b+1}°F`; }
+  return `${Math.round(val)}°C`;
+}
+
+function formatPolymarketDate(dateStr) {
+  const d = new Date(dateStr + "T00:00:00Z");
+  const months = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+  return `${months[d.getUTCMonth()]}-${d.getUTCDate()}-${d.getUTCFullYear()}`;
+}
+
+function getDates() {
+  const dates = [];
+  for (let i = 0; i <= 2; i++) {
+    const d = new Date(); d.setUTCDate(d.getUTCDate() + i);
+    dates.push(d.toISOString().slice(0, 10));
+  }
+  return dates;
+}
+
+async function fetchForecasts(city, dateStr) {
+  const u = city.unit === "F" ? "&temperature_unit=fahrenheit" : "";
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${city.lat || CITIES.find(c=>c.slug===city.slug)?.lat}&longitude=${city.lon || CITIES.find(c=>c.slug===city.slug)?.lon}&daily=temperature_2m_max&timezone=UTC&start_date=${dateStr}&end_date=${dateStr}&models=ecmwf_ifs025,gfs_seamless,icon_seamless${u}`;
+  const data = await (await fetch(url)).json();
+  const result = {};
+  for (const [k, v] of Object.entries(data.daily || {})) {
+    if (k.startsWith("temperature_2m_max_")) {
+      let model = k.replace("temperature_2m_max_", "").replace("_seamless", "").replace("_ifs025", "");
+      if (v[0] != null) result[model] = v[0];
+    }
+  }
+  return result;
+}
+
+const CITY_COORDS = {
+  "paris": { lat: 49.0097, lon: 2.5479 },
+  "london": { lat: 51.5053, lon: 0.0553 },
+  "chicago": { lat: 41.9742, lon: -87.9073 },
+  "buenos-aires": { lat: -34.5561, lon: -58.4156 },
+};
+
+async function fetchForecastsLive(slug, unit, dateStr) {
+  const c = CITY_COORDS[slug];
+  const u = unit === "F" ? "&temperature_unit=fahrenheit" : "";
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${c.lat}&longitude=${c.lon}&daily=temperature_2m_max&timezone=UTC&start_date=${dateStr}&end_date=${dateStr}&models=ecmwf_ifs025,gfs_seamless,icon_seamless${u}`;
+  const data = await (await fetch(url)).json();
+  const result = {};
+  for (const [k, v] of Object.entries(data.daily || {})) {
+    if (k.startsWith("temperature_2m_max_")) {
+      let model = k.replace("temperature_2m_max_", "").replace("_seamless", "").replace("_ifs025", "");
+      if (v[0] != null) result[model] = v[0];
+    }
+  }
+  return result;
+}
+
+async function fetchMarketLive(slug, dateStr) {
+  const fmtDate = formatPolymarketDate(dateStr);
+  const eventSlug = `highest-temperature-in-${slug}-on-${fmtDate}`;
+  try {
+    const data = await (await fetch(`https://gamma-api.polymarket.com/events?slug=${eventSlug}`)).json();
+    if (!data[0]) return null;
+    return data[0].markets.map(m => ({
+      title: m.groupItemTitle,
+      price: parseFloat(JSON.parse(m.outcomePrices)[0]),
+      volume: parseFloat(m.volume || "0"),
+    })).sort((a, b) => b.price - a.price);
+  } catch { return null; }
+}
+
+function renderCard(city, dateStr, forecasts, market) {
+  const u = city.unit === "F" ? "°F" : "°C";
+  const models = Object.entries(forecasts).filter(([k,v]) => v != null);
+  const buckets = models.map(([k,v]) => getBucket(v, city.unit));
+
+  const bucketCounts = {};
+  buckets.forEach(b => bucketCounts[b] = (bucketCounts[b] || 0) + 1);
+  const consBucket = Object.entries(bucketCounts).sort((a,b) => b[1] - a[1])[0];
+  const consensus = consBucket ? consBucket[0] : null;
+  const agreement = consBucket ? consBucket[1] : 0;
+
+  const modelConf = agreement >= 3 ? 0.87 : agreement >= 2 ? city.hist : 0;
+  const targetMarket = market?.find(m => m.title === consensus);
+  const edge = targetMarket && agreement >= 2 ? modelConf - targetMarket.price : 0;
+
+  let signalClass, signalText;
+  if (edge > 0.15 && agreement >= 2) { signalClass = "signal-strong"; signalText = `🔥 STRONG (${agreement}/3)`; }
+  else if (edge > 0.05 && agreement >= 2) { signalClass = "signal-marginal"; signalText = `⚠️ MARGINAL (${agreement}/3)`; }
+  else if (agreement < 2) { signalClass = "signal-skip"; signalText = `❌ NO CONSENSUS`; }
+  else { signalClass = "signal-skip"; signalText = `❌ NO EDGE`; }
+
+  let html = `<div class="card">
+    <div class="card-header"><span class="city-name">${city.name}</span><span class="date-badge">${dateStr}</span></div>
+    <span class="signal ${signalClass}">${signalText}</span>
+    <div class="models">`;
+  for (const [model, val] of models) {
+    const bucket = getBucket(val, city.unit);
+    const isCons = bucket === consensus;
+    html += `<div class="model-box"><div class="model-name">${model}</div><div class="model-val ${isCons?'agree':'disagree'}">${val.toFixed(1)}${u}</div><div class="model-bucket ${isCons?'agree':'disagree'}">→ ${bucket}</div></div>`;
+  }
+  html += `</div>`;
+
+  if (market) {
+    html += `<div style="font-size:0.75em;color:#555;margin-bottom:4px">MARKET PRICES</div>`;
+    for (const m of market.slice(0, 5)) {
+      const isTarget = targetMarket && m.title === targetMarket.title;
+      const barColor = isTarget ? (edge > 0.15 ? 'bar-green' : edge > 0 ? 'bar-yellow' : 'bar-gray') : 'bar-gray';
+      html += `<div class="market-row ${isTarget ? 'target' : ''}"><span>${m.title}</span><div style="display:flex;align-items:center;gap:8px"><div class="bar-container"><div class="bar ${barColor}" style="width:${m.price*100}%"></div></div><span style="width:40px;text-align:right">${(m.price*100).toFixed(1)}%</span></div></div>`;
+    }
+  } else {
+    html += `<div style="color:#555;font-size:0.85em">No market found</div>`;
+  }
+
+  if (targetMarket && agreement >= 2) {
+    html += `<div class="edge-box"><div><div class="edge-label">TARGET</div><div>${targetMarket.title} @ ${(targetMarket.price*100).toFixed(1)}¢</div></div><div><div class="edge-label">MODEL CONF</div><div>${(modelConf*100).toFixed(0)}%</div></div><div><div class="edge-label">EDGE</div><div class="edge-value ${edge > 0 ? 'edge-positive' : 'edge-negative'}">${edge > 0 ? '+' : ''}${(edge*100).toFixed(1)}%</div></div></div>`;
+  }
+  html += `</div>`;
+  return { html, signal: signalClass.includes("strong") ? "strong" : signalClass.includes("marginal") ? "marginal" : "skip", edge };
+}
+
+async function refresh() {
+  const dashboard = document.getElementById("dashboard");
+  dashboard.innerHTML = '<div class="card"><div class="loading">Fetching live data...</div></div>';
+
+  const dates = getDates();
+  let cards = [];
+  let strong = 0, marginal = 0, bestEdge = 0;
+
+  for (const dateStr of dates) {
+    for (const city of CITIES) {
+      try {
+        const [forecasts, market] = await Promise.all([
+          fetchForecastsLive(city.slug, city.unit, dateStr),
+          fetchMarketLive(city.slug, dateStr),
+        ]);
+        const result = renderCard(city, dateStr, forecasts, market);
+        cards.push(result);
+        if (result.signal === "strong") strong++;
+        if (result.signal === "marginal") marginal++;
+        if (result.edge > bestEdge) bestEdge = result.edge;
+      } catch (e) {
+        cards.push({ html: `<div class="card"><div class="city-name">${city.name} — ${dateStr}</div><div style="color:#f87171">${e.message}</div></div>`, signal: "skip", edge: 0 });
+      }
+    }
+  }
+
+  const order = { strong: 0, marginal: 1, skip: 2 };
+  cards.sort((a, b) => order[a.signal] - order[b.signal]);
+  dashboard.innerHTML = cards.map(c => c.html).join("");
+
+  document.getElementById("signalCount").textContent = cards.length;
+  document.getElementById("strongCount").textContent = strong;
+  document.getElementById("marginalCount").textContent = marginal;
+  document.getElementById("bestEdge").textContent = bestEdge > 0 ? `+${(bestEdge*100).toFixed(0)}%` : "—";
+  document.getElementById("lastUpdate").textContent = `| Updated ${new Date().toLocaleTimeString()}`;
+
+  // Check data points in supabase
+  const { count } = await sb.from('forecasts').select('*', { count: 'exact', head: true });
+  document.getElementById("dataPoints").textContent = count ?? 0;
+}
+
+async function loadCharts() {
+  const area = document.getElementById("chartArea");
+  area.innerHTML = '<div class="loading" style="padding:40px;text-align:center">Loading historical data...</div>';
+
+  const dates = getDates();
+  let html = '';
+
+  for (const city of CITIES) {
+    html += `<div class="chart-container">
+      <div class="chart-header">
+        <span class="chart-title">${city.name} — Model Confidence vs Market Price</span>
+        <div class="date-selector" id="dates-${city.slug}">
+          ${dates.map((d, i) => `<button class="date-btn ${i===1?'active':''}" onclick="loadCityChart('${city.slug}','${d}',this)">${d}</button>`).join('')}
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-${city.slug}"></canvas></div>
+    </div>`;
+  }
+  area.innerHTML = html;
+
+  // Load tomorrow's chart for each city by default
+  for (const city of CITIES) {
+    await loadCityChart(city.slug, dates[1]);
+  }
+}
+
+async function loadCityChart(slug, targetDate, btn) {
+  if (btn) {
+    btn.parentElement.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  }
+
+  const city = CITIES.find(c => c.slug === slug);
+  const canvasId = `chart-${slug}`;
+
+  // Fetch historical signals for this city+date
+  const { data: signals } = await sb
+    .from('signals')
+    .select('*')
+    .eq('city', slug)
+    .eq('target_date', targetDate)
+    .order('collected_at', { ascending: true });
+
+  // Fetch historical market prices for consensus bucket
+  const { data: marketData } = await sb
+    .from('market_prices')
+    .select('*')
+    .eq('city', slug)
+    .eq('target_date', targetDate)
+    .order('collected_at', { ascending: true });
+
+  // Destroy old chart
+  if (charts[canvasId]) { charts[canvasId].destroy(); delete charts[canvasId]; }
+
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+
+  if ((!signals || signals.length === 0) && (!marketData || marketData.length === 0)) {
+    canvas.parentElement.innerHTML = `<div class="no-data">No historical data yet for ${targetDate}. Collector needs to run first.</div>`;
+    return;
+  }
+
+  // Build datasets
+  // 1. Model confidence line (from signals)
+  const confData = (signals || []).filter(s => s.model_confidence > 0).map(s => ({
+    x: new Date(s.collected_at),
+    y: s.model_confidence * 100
+  }));
+
+  // 2. Market price of consensus bucket (from signals)
+  const marketPriceData = (signals || []).filter(s => s.market_price != null).map(s => ({
+    x: new Date(s.collected_at),
+    y: s.market_price * 100
+  }));
+
+  // 3. Edge (from signals)
+  const edgeData = (signals || []).filter(s => s.edge != null).map(s => ({
+    x: new Date(s.collected_at),
+    y: s.edge * 100
+  }));
+
+  // 4. All market buckets over time (top 3 by latest price)
+  const bucketMap = {};
+  (marketData || []).forEach(m => {
+    if (!bucketMap[m.bucket]) bucketMap[m.bucket] = [];
+    bucketMap[m.bucket].push({ x: new Date(m.collected_at), y: m.price * 100 });
+  });
+
+  // Get top 3 buckets by latest price
+  const bucketLatest = Object.entries(bucketMap).map(([bucket, pts]) => ({
+    bucket, lastPrice: pts[pts.length - 1]?.y || 0
+  })).sort((a, b) => b.lastPrice - a.lastPrice).slice(0, 3);
+
+  const bucketColors = ['#60a5fa', '#a78bfa', '#fb923c'];
+
+  const datasets = [
+    {
+      label: 'Model Confidence',
+      data: confData,
+      borderColor: '#4ade80',
+      backgroundColor: 'rgba(74,222,128,0.1)',
+      borderWidth: 2,
+      pointRadius: 3,
+      fill: false,
+      yAxisID: 'y',
+    },
+    {
+      label: 'Consensus Bucket (Market)',
+      data: marketPriceData,
+      borderColor: '#f87171',
+      backgroundColor: 'rgba(248,113,113,0.1)',
+      borderWidth: 2,
+      pointRadius: 3,
+      fill: false,
+      yAxisID: 'y',
+    },
+    {
+      label: 'Edge (Δ)',
+      data: edgeData,
+      borderColor: '#facc15',
+      backgroundColor: 'rgba(250,204,21,0.15)',
+      borderWidth: 2,
+      borderDash: [5, 5],
+      pointRadius: 2,
+      fill: true,
+      yAxisID: 'y2',
+    },
+  ];
+
+  // Add individual bucket lines
+  bucketLatest.forEach((b, i) => {
+    datasets.push({
+      label: b.bucket,
+      data: bucketMap[b.bucket],
+      borderColor: bucketColors[i],
+      borderWidth: 1,
+      pointRadius: 1,
+      borderDash: [3, 3],
+      fill: false,
+      yAxisID: 'y',
+    });
+  });
+
+  charts[canvasId] = new Chart(canvas, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#888', font: { size: 11 } } },
+        tooltip: {
+          backgroundColor: '#1e1e2e',
+          titleColor: '#fff',
+          bodyColor: '#ccc',
+          borderColor: '#2e2e3e',
+          borderWidth: 1,
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}%`
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: { tooltipFormat: 'MMM d, HH:mm', displayFormats: { hour: 'HH:mm', day: 'MMM d' } },
+          ticks: { color: '#555' },
+          grid: { color: '#1a1a2a' },
+        },
+        y: {
+          position: 'left',
+          min: 0, max: 100,
+          title: { display: true, text: 'Probability %', color: '#666' },
+          ticks: { color: '#555', callback: v => v + '%' },
+          grid: { color: '#1a1a2a' },
+        },
+        y2: {
+          position: 'right',
+          title: { display: true, text: 'Edge %', color: '#666' },
+          ticks: { color: '#555', callback: v => v + '%' },
+          grid: { drawOnChartArea: false },
+        }
+      }
+    }
+  });
+}
+
+// Init
+refresh();
+setInterval(refresh, 5 * 60 * 1000);
+</script>
+</body>
+</html>
