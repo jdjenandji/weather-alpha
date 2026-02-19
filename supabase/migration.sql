@@ -59,6 +59,22 @@ create table if not exists trades (
 );
 create index if not exists idx_trades_lookup on trades (city, target_date);
 
+-- Trade alerts table (forecast shift monitoring)
+create table if not exists trade_alerts (
+  id bigint generated always as identity primary key,
+  trade_id bigint references trades(id),
+  city text not null,
+  target_date date not null,
+  trade_bucket text not null,
+  current_consensus text,
+  models_on_bucket int not null,
+  state text not null, -- holding, drifting, broken
+  detail text,
+  model_detail text,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_trade_alerts_lookup on trade_alerts (trade_id, created_at);
+
 -- RLS
 alter table forecasts enable row level security;
 alter table market_prices enable row level security;
@@ -75,3 +91,7 @@ alter table trades enable row level security;
 create policy "anon_select_trades" on trades for select to anon using (true);
 create policy "anon_insert_trades" on trades for insert to anon with check (true);
 create policy "anon_update_trades" on trades for update to anon using (true);
+
+alter table trade_alerts enable row level security;
+create policy "anon_select_trade_alerts" on trade_alerts for select to anon using (true);
+create policy "anon_insert_trade_alerts" on trade_alerts for insert to anon with check (true);

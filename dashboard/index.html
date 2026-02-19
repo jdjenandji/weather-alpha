@@ -570,6 +570,41 @@ async function loadTrades() {
   }
 
   html += '</tbody></table></div>';
+
+  // Load alerts for open trades
+  const openIds = trades.filter(t => t.status === 'open').map(t => t.id);
+  if (openIds.length > 0) {
+    const { data: alerts } = await sb
+      .from('trade_alerts')
+      .select('*')
+      .in('trade_id', openIds)
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (alerts && alerts.length > 0) {
+      // Group by trade, show latest per trade
+      const latestByTrade = {};
+      alerts.forEach(a => { if (!latestByTrade[a.trade_id]) latestByTrade[a.trade_id] = a; });
+
+      html += '<div style="margin-top:16px"><div style="font-size:0.75em;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #1e1e2e">📡 Forecast Monitor</div>';
+      for (const a of Object.values(latestByTrade)) {
+        const cityName = CITIES.find(c => c.slug === a.city)?.name || a.city;
+        const time = new Date(a.created_at).toLocaleString('en-GB', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'UTC' });
+        const stateColor = a.state === 'holding' ? '#4ade80' : a.state === 'drifting' ? '#facc15' : '#f87171';
+        const stateBg = a.state === 'holding' ? '#0f3d0f' : a.state === 'drifting' ? '#3d3d0f' : '#3d0f0f';
+        html += `<div class="card" style="margin-bottom:8px;padding:12px;border-left:3px solid ${stateColor}">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div><strong>${cityName}</strong> ${a.target_date} — <span style="background:${stateBg};color:${stateColor};padding:2px 8px;border-radius:4px;font-size:0.8em">${a.state.toUpperCase()}</span></div>
+            <span style="font-size:0.7em;color:#555">${time} UTC</span>
+          </div>
+          <div style="margin-top:6px;font-size:0.85em;color:#aaa">${a.detail}</div>
+          <div style="margin-top:4px;font-size:0.75em;color:#555">${a.model_detail}</div>
+        </div>`;
+      }
+      html += '</div>';
+    }
+  }
+
   area.innerHTML = html;
 }
 

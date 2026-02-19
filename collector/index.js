@@ -189,7 +189,168 @@ async function collect() {
     }
   }
 
-  console.log('Done.');
+  console.log('Collection done. Running monitor...');
+  await monitor();
+  await resolve();
+  console.log('All done.');
+}
+
+// ============================================================
+// MONITOR — Check open trades for forecast shifts
+// ============================================================
+async function monitor() {
+  const { data: openTrades } = await supabase
+    .from('trades')
+    .select('*')
+    .eq('status', 'open');
+
+  if (!openTrades || openTrades.length === 0) {
+    console.log('[monitor] No open trades to monitor');
+    return;
+  }
+
+  console.log(`[monitor] Checking ${openTrades.length} open trade(s)...`);
+
+  for (const trade of openTrades) {
+    const city = CITIES.find(c => c.slug === trade.city);
+    if (!city) continue;
+
+    try {
+      // Get fresh forecasts
+      const forecasts = await fetchForecasts(city, trade.target_date);
+      const currentBuckets = Object.entries(forecasts).map(([model, val]) => ({
+        model,
+        temp: val,
+        bucket: getBucket(val, city.unit),
+      }));
+
+      // How many models still agree with our trade bucket?
+      const agreeing = currentBuckets.filter(m => m.bucket === trade.bucket);
+      const disagreeing = currentBuckets.filter(m => m.bucket !== trade.bucket);
+
+      // Current consensus
+      const bucketCounts = {};
+      currentBuckets.forEach(m => bucketCounts[m.bucket] = (bucketCounts[m.bucket] || 0) + 1);
+      const topBucket = Object.entries(bucketCounts).sort((a, b) => b[1] - a[1])[0];
+      const currentConsensus = topBucket ? topBucket[0] : null;
+      const consensusCount = topBucket ? topBucket[1] : 0;
+
+      // Determine state
+      let state, detail;
+      if (agreeing.length === 3) {
+        state = 'holding';
+        detail = `✅ All 3 models still on ${trade.bucket}`;
+      } else if (agreeing.length === 2) {
+        state = 'drifting';
+        const drifted = disagreeing[0];
+        detail = `⚠️ ${drifted.model.toUpperCase()} shifted to ${drifted.bucket} (${drifted.temp.toFixed(1)}${city.unit === 'F' ? '°F' : '°C'}). 2/3 still on ${trade.bucket}`;
+      } else if (agreeing.length === 1) {
+        state = 'broken';
+        detail = `🚨 Consensus flipped to ${currentConsensus} (${consensusCount}/3). Only ${agreeing[0].model.toUpperCase()} still on ${trade.bucket}`;
+      } else {
+        state = 'broken';
+        detail = `🚨 ALL models left ${trade.bucket}. Consensus now ${currentConsensus} (${consensusCount}/3)`;
+      }
+
+      const modelDetail = currentBuckets.map(m => `${m.model}=${m.temp.toFixed(1)}→${m.bucket}`).join(', ');
+      console.log(`  [${trade.city} ${trade.target_date}] ${detail} | ${modelDetail}`);
+
+      // Get previous alert state to detect changes
+      const { data: lastAlert } = await supabase
+        .from('trade_alerts')
+        .select('state')
+        .eq('trade_id', trade.id)
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      const previousState = lastAlert?.[0]?.state;
+
+      // Log alert if state changed
+      if (state !== previousState) {
+        await supabase.from('trade_alerts').insert({
+          trade_id: trade.id,
+          city: trade.city,
+          target_date: trade.target_date,
+          trade_bucket: trade.bucket,
+          current_consensus: currentConsensus,
+          models_on_bucket: agreeing.length,
+          state,
+          detail,
+          model_detail: modelDetail,
+        });
+
+        if (state === 'broken') {
+          console.log(`  🚨 ALERT: ${trade.city} ${trade.target_date} — trade bucket ${trade.bucket} is BROKEN. Consensus moved to ${currentConsensus}`);
+        } else if (state === 'drifting' && previousState === 'holding') {
+          console.log(`  ⚠️ ALERT: ${trade.city} ${trade.target_date} — 1 model drifted from ${trade.bucket}`);
+        }
+      }
+
+      await new Promise(r => setTimeout(r, 300));
+    } catch (err) {
+      console.error(`  [monitor] Error checking ${trade.city} ${trade.target_date}:`, err.message);
+    }
+  }
+}
+
+// ============================================================
+// RESOLVE — Auto-resolve trades using ERA5 archive
+// ============================================================
+async function resolve() {
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Find open trades where target_date is in the past
+  const { data: unresolvedTrades } = await supabase
+    .from('trades')
+    .select('*')
+    .eq('status', 'open')
+    .lt('target_date', today);
+
+  if (!unresolvedTrades || unresolvedTrades.length === 0) {
+    console.log('[resolve] No trades to resolve');
+    return;
+  }
+
+  console.log(`[resolve] Resolving ${unresolvedTrades.length} past trade(s)...`);
+
+  for (const trade of unresolvedTrades) {
+    const city = CITIES.find(c => c.slug === trade.city);
+    if (!city) continue;
+
+    try {
+      // Fetch actual high temp from ERA5 archive
+      const tempUnit = city.unit === "F" ? "&temperature_unit=fahrenheit" : "";
+      const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${city.lat}&longitude=${city.lon}&daily=temperature_2m_max&timezone=${encodeURIComponent(city.tz)}&start_date=${trade.target_date}&end_date=${trade.target_date}${tempUnit}`;
+
+      const res = await fetch(url);
+      if (!res.ok) { console.log(`  [resolve] Archive API error for ${trade.city} ${trade.target_date}`); continue; }
+      const data = await res.json();
+      const actual = data.daily?.temperature_2m_max?.[0];
+      if (actual == null) { console.log(`  [resolve] No archive data yet for ${trade.city} ${trade.target_date}`); continue; }
+
+      const actualBucket = getBucket(actual, city.unit);
+      const won = actualBucket === trade.bucket;
+      const pnl = won ? +(trade.shares * (1 - trade.price)).toFixed(2) : -trade.cost;
+
+      const { error } = await supabase
+        .from('trades')
+        .update({
+          status: won ? 'won' : 'lost',
+          pnl,
+        })
+        .eq('id', trade.id);
+
+      if (error) console.error(`  [resolve] Update error:`, error.message);
+      else {
+        const icon = won ? '✅' : '❌';
+        console.log(`  ${icon} ${trade.city} ${trade.target_date}: actual ${actual.toFixed(1)}→${actualBucket} | trade was ${trade.bucket} | ${won ? 'WON' : 'LOST'} | P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`);
+      }
+
+      await new Promise(r => setTimeout(r, 300));
+    } catch (err) {
+      console.error(`  [resolve] Error resolving ${trade.city} ${trade.target_date}:`, err.message);
+    }
+  }
 }
 
 collect().catch(err => {
