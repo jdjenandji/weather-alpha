@@ -84,6 +84,7 @@
   <div class="tab" onclick="switchTab('charts')">📈 Delta Charts</div>
   <div class="tab" onclick="switchTab('trades')">💰 Trades</div>
   <div class="tab" onclick="switchTab('backtest')">📊 Backtest</div>
+  <div class="tab" onclick="switchTab('logic')">🧠 Trading Logic</div>
 </div>
 
 <div id="liveTab">
@@ -94,6 +95,186 @@
 
 <div id="chartsTab" style="display:none">
   <div id="chartArea"></div>
+</div>
+
+<div id="logicTab" style="display:none">
+  <div style="max-width:900px">
+
+    <div class="card" style="margin-bottom:16px;border-left:3px solid #4ade80">
+      <div style="font-size:1.2em;font-weight:700;margin-bottom:12px">🧠 Trading Logic v2</div>
+      <div style="font-size:0.85em;color:#888;margin-bottom:16px">Updated Feb 19 2026 — based on 90-day backtest (Nov 21 2025 → Feb 17 2026)</div>
+
+      <div style="background:#0a0a12;border-radius:8px;padding:16px;margin-bottom:16px">
+        <div style="font-size:0.8em;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Core Rules</div>
+        <div style="display:flex;flex-direction:column;gap:8px;font-size:0.9em">
+          <div>1️⃣ <strong style="color:#4ade80">ECMWF must agree</strong> — If ECMWF disagrees with the consensus bucket, skip. ECMWF is the best model for all Tier 1 cities.</div>
+          <div>2️⃣ <strong style="color:#facc15">Per-city consensus threshold</strong> — London needs ≥2/3, Paris and Chicago need 3/3.</div>
+          <div>3️⃣ <strong style="color:#60a5fa">Edge > 15%</strong> — Model confidence minus market price must exceed 15% for a strong signal.</div>
+          <div>4️⃣ <strong style="color:#fb923c">One trade per city per date</strong> — No doubling down.</div>
+          <div>5️⃣ <strong style="color:#a78bfa">Monitor for shifts</strong> — If consensus breaks after entry, flag as BROKEN.</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="font-size:0.8em;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #1e1e2e">Active Markets</div>
+    <div class="grid" style="margin-bottom:16px">
+
+      <div class="card" style="border-left:3px solid #4ade80">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-weight:700;font-size:1.1em">🇬🇧 London</span>
+          <span style="background:#0f3d0f;color:#4ade80;padding:3px 10px;border-radius:6px;font-size:0.8em;font-weight:600">PRIMARY</span>
+        </div>
+        <div style="font-size:0.85em;color:#aaa;margin-bottom:10px">Station: EGLC (London City Airport) · 1°C buckets</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
+            <div style="font-size:0.7em;color:#666">MIN CONSENSUS</div>
+            <div style="font-size:1.3em;font-weight:700;color:#4ade80">≥2/3</div>
+          </div>
+          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
+            <div style="font-size:0.7em;color:#666">ECMWF ALONE</div>
+            <div style="font-size:1.3em;font-weight:700;color:#4ade80">85%</div>
+          </div>
+          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
+            <div style="font-size:0.7em;color:#666">≥2/3 RATE</div>
+            <div style="font-size:1.3em;font-weight:700;color:#4ade80">83%</div>
+          </div>
+          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
+            <div style="font-size:0.7em;color:#666">3/3 RATE</div>
+            <div style="font-size:1.3em;font-weight:700;color:#4ade80">90%</div>
+          </div>
+        </div>
+        <div style="margin-top:10px;font-size:0.8em;color:#555">MAE: 0.17°C · Triggers 93% of days · Last 30d: 93% · Best market by far</div>
+      </div>
+
+      <div class="card" style="border-left:3px solid #60a5fa">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-weight:700;font-size:1.1em">🇫🇷 Paris</span>
+          <span style="background:#1e1e2e;color:#facc15;padding:3px 10px;border-radius:6px;font-size:0.8em;font-weight:600">3/3 ONLY</span>
+        </div>
+        <div style="font-size:0.85em;color:#aaa;margin-bottom:10px">Station: LFPG (CDG Airport) · 1°C buckets</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
+            <div style="font-size:0.7em;color:#666">MIN CONSENSUS</div>
+            <div style="font-size:1.3em;font-weight:700;color:#facc15">3/3</div>
+          </div>
+          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
+            <div style="font-size:0.7em;color:#666">ECMWF ALONE</div>
+            <div style="font-size:1.3em;font-weight:700;color:#facc15">67%</div>
+          </div>
+          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
+            <div style="font-size:0.7em;color:#666">≥2/3 RATE</div>
+            <div style="font-size:1.3em;font-weight:700;color:#f87171">65%</div>
+          </div>
+          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
+            <div style="font-size:0.7em;color:#666">3/3 RATE</div>
+            <div style="font-size:1.3em;font-weight:700;color:#facc15">75%</div>
+          </div>
+        </div>
+        <div style="margin-top:10px;font-size:0.8em;color:#555">MAE: 0.29°C · 3/3 triggers 22% of days · Declining trend: Nov 86%→Feb 59%</div>
+      </div>
+
+      <div class="card" style="border-left:3px solid #facc15">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-weight:700;font-size:1.1em">🇺🇸 Chicago</span>
+          <span style="background:#1e1e2e;color:#facc15;padding:3px 10px;border-radius:6px;font-size:0.8em;font-weight:600">3/3 ONLY</span>
+        </div>
+        <div style="font-size:0.85em;color:#aaa;margin-bottom:10px">Station: KORD (O'Hare Airport) · 2°F buckets</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
+            <div style="font-size:0.7em;color:#666">MIN CONSENSUS</div>
+            <div style="font-size:1.3em;font-weight:700;color:#facc15">3/3</div>
+          </div>
+          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
+            <div style="font-size:0.7em;color:#666">ECMWF ALONE</div>
+            <div style="font-size:1.3em;font-weight:700;color:#4ade80">79%</div>
+          </div>
+          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
+            <div style="font-size:0.7em;color:#666">≥2/3 RATE</div>
+            <div style="font-size:1.3em;font-weight:700;color:#f87171">66%</div>
+          </div>
+          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
+            <div style="font-size:0.7em;color:#666">3/3 RATE</div>
+            <div style="font-size:1.3em;font-weight:700;color:#4ade80">83%</div>
+          </div>
+        </div>
+        <div style="margin-top:10px;font-size:0.8em;color:#555">MAE: 0.42°F · 3/3 triggers 13% of days · GFS is terrible here (25% match)</div>
+      </div>
+
+    </div>
+
+    <div style="font-size:0.8em;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #1e1e2e">Removed Markets</div>
+    <div class="card" style="margin-bottom:16px;opacity:0.6">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-weight:700">🇦🇷 Buenos Aires</span>
+        <span style="background:#2d1215;color:#f87171;padding:3px 10px;border-radius:6px;font-size:0.8em;font-weight:600">REMOVED</span>
+      </div>
+      <div style="font-size:0.85em;color:#666;margin-top:6px">60% consensus rate · 3/3 fires only 3% of days · GFS 21% match · Not tradeable</div>
+    </div>
+
+    <div style="font-size:0.8em;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #1e1e2e">Signal Flow</div>
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-family:monospace;font-size:0.85em;line-height:2;color:#aaa">
+        <div>┌─ Fetch ECMWF, GFS, ICON forecasts</div>
+        <div>├─ Compute bucket for each model</div>
+        <div>├─ Find consensus bucket (most common)</div>
+        <div>├─ <span style="color:#f87171">ECMWF disagrees? → SKIP</span></div>
+        <div>├─ <span style="color:#f87171">Below city minConsensus? → SKIP</span></div>
+        <div>├─ Fetch Polymarket odds for consensus bucket</div>
+        <div>├─ Calculate edge = model_confidence − market_price</div>
+        <div>├─ <span style="color:#f87171">Edge ≤ 15%? → SKIP</span></div>
+        <div>├─ <span style="color:#f87171">Already traded this city+date? → SKIP</span></div>
+        <div>├─ <span style="color:#4ade80">✅ PAPER TRADE: BUY consensus bucket YES</span></div>
+        <div>├─ Every 15 min: monitor for forecast shifts</div>
+        <div>│  ├─ 3/3 still agree → ✅ HOLDING</div>
+        <div>│  ├─ 2/3 agree → ⚠️ DRIFTING</div>
+        <div>│  └─ Consensus flipped → 🚨 BROKEN</div>
+        <div>└─ Next day: auto-resolve via ERA5 archive → WON/LOST + P&L</div>
+      </div>
+    </div>
+
+    <div style="font-size:0.8em;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #1e1e2e">Key Learnings</div>
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:flex;flex-direction:column;gap:12px;font-size:0.9em">
+        <div>
+          <div style="font-weight:600;color:#f87171;margin-bottom:2px">📉 30-day backtests are misleading</div>
+          <div style="color:#888">Paris went from 87% (30d) to 67% (90d). Always backtest with maximum available data.</div>
+        </div>
+        <div>
+          <div style="font-weight:600;color:#4ade80;margin-bottom:2px">🏆 ECMWF is king, but not infallible</div>
+          <div style="color:#888">Best model for all Tier 1 cities. But when ECMWF disagrees with consensus, it's often because ECMWF had an outlier run (see London Trade #1: 7.9°C→7.2°C correction).</div>
+        </div>
+        <div>
+          <div style="font-weight:600;color:#facc15;margin-bottom:2px">⚠️ GFS is unreliable outside Europe</div>
+          <div style="color:#888">25% match in Chicago, 21% in Buenos Aires. GFS agreement only adds value in London (69%) and Paris (43%).</div>
+        </div>
+        <div>
+          <div style="font-weight:600;color:#60a5fa;margin-bottom:2px">🎯 3/3 consensus is the real signal</div>
+          <div style="color:#888">London 90%, Chicago 83%, Paris 75%. But it fires rarely outside London. Quality over quantity.</div>
+        </div>
+        <div>
+          <div style="font-weight:600;color:#a78bfa;margin-bottom:2px">📊 Seasonality matters</div>
+          <div style="color:#888">Paris accuracy declined from Nov (86%) to Feb (59%). Models struggle more with winter volatility.</div>
+        </div>
+        <div>
+          <div style="font-weight:600;color:#f87171;margin-bottom:2px">🚫 Boundary filter doesn't work</div>
+          <div style="color:#888">Filtering trades near bucket boundaries (±0.3°C) actually reduced accuracy. Removed from logic.</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="font-size:0.8em;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #1e1e2e">Data Sources</div>
+    <div class="card">
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:0.85em">
+        <span style="color:#666">Forecasts</span><span>Open-Meteo (ECMWF IFS 0.25°, GFS, ICON)</span>
+        <span style="color:#666">Market data</span><span>Polymarket Gamma API</span>
+        <span style="color:#666">Resolution</span><span>Weather Underground (airport METAR stations)</span>
+        <span style="color:#666">Backtest actuals</span><span>ERA5 reanalysis (proxy for WU, small delta possible)</span>
+        <span style="color:#666">ECMWF schedule</span><span>00z available ~05:30 UTC · 12z available ~17:30 UTC</span>
+        <span style="color:#666">Collection interval</span><span>Every 15 minutes via Railway cron</span>
+      </div>
+    </div>
+
+  </div>
 </div>
 
 <div id="backtestTab" style="display:none">
@@ -130,6 +311,7 @@ function switchTab(tab) {
   document.getElementById('chartsTab').style.display = tab === 'charts' ? '' : 'none';
   document.getElementById('tradesTab').style.display = tab === 'trades' ? '' : 'none';
   document.getElementById('backtestTab').style.display = tab === 'backtest' ? '' : 'none';
+  document.getElementById('logicTab').style.display = tab === 'logic' ? '' : 'none';
   if (tab === 'charts') loadCharts();
   if (tab === 'trades') loadTrades();
   if (tab === 'backtest') loadBacktest();
