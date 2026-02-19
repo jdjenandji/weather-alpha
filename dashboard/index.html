@@ -315,6 +315,16 @@ async function refresh() {
   document.getElementById("dataPoints").textContent = count ?? 0;
 }
 
+// Extract temperature from bucket label: "8°C" -> 8, "52 to 53°F" -> 52.5
+function bucketToTemp(bucket) {
+  if (!bucket) return null;
+  const cMatch = bucket.match(/^(-?\d+)°C$/);
+  if (cMatch) return parseInt(cMatch[1]);
+  const fMatch = bucket.match(/^(-?\d+)\s*to\s*(-?\d+)°F$/);
+  if (fMatch) return (parseInt(fMatch[1]) + parseInt(fMatch[2])) / 2;
+  return null;
+}
+
 async function loadCharts() {
   const area = document.getElementById("chartArea");
   area.innerHTML = '<div class="loading" style="padding:40px;text-align:center">Loading historical data...</div>';
@@ -325,7 +335,7 @@ async function loadCharts() {
   for (const city of CITIES) {
     html += `<div class="chart-container">
       <div class="chart-header">
-        <span class="chart-title">${city.name} — Model Confidence vs Market Price</span>
+        <span class="chart-title">${city.name} — Forecast vs Market Favorite</span>
         <div class="date-selector" id="dates-${city.slug}">
           ${dates.map((d, i) => `<button class="date-btn ${i===1?'active':''}" onclick="loadCityChart('${city.slug}','${d}',this)">${d}</button>`).join('')}
         </div>
@@ -335,7 +345,6 @@ async function loadCharts() {
   }
   area.innerHTML = html;
 
-  // Load tomorrow's chart for each city by default
   for (const city of CITIES) {
     await loadCityChart(city.slug, dates[1]);
   }
@@ -348,115 +357,87 @@ async function loadCityChart(slug, targetDate, btn) {
   }
 
   const city = CITIES.find(c => c.slug === slug);
+  const unit = city.unit === "F" ? "°F" : "°C";
   const canvasId = `chart-${slug}`;
 
-  // Fetch historical signals for this city+date
-  const { data: signals } = await sb
-    .from('signals')
-    .select('*')
+  // Fetch ECMWF forecasts over time from Supabase
+  const { data: fcRows } = await sb
+    .from('forecasts')
+    .select('model, temp_value, collected_at')
     .eq('city', slug)
     .eq('target_date', targetDate)
+    .eq('model', 'ecmwf')
     .order('collected_at', { ascending: true });
 
-  // Fetch historical market prices for consensus bucket
-  const { data: marketData } = await sb
+  // Fetch market prices over time — we need the favorite (highest priced bucket) at each collection
+  const { data: mkRows } = await sb
     .from('market_prices')
-    .select('*')
+    .select('bucket, price, collected_at')
     .eq('city', slug)
     .eq('target_date', targetDate)
     .order('collected_at', { ascending: true });
 
-  // Destroy old chart
   if (charts[canvasId]) { charts[canvasId].destroy(); delete charts[canvasId]; }
 
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
 
-  if ((!signals || signals.length === 0) && (!marketData || marketData.length === 0)) {
+  if ((!fcRows || fcRows.length === 0) && (!mkRows || mkRows.length === 0)) {
     canvas.parentElement.innerHTML = `<div class="no-data">No historical data yet for ${targetDate}. Collector needs to run first.</div>`;
     return;
   }
 
-  // Build datasets
-  // 1. Model confidence line (from signals)
-  const confData = (signals || []).filter(s => s.model_confidence > 0).map(s => ({
-    x: new Date(s.collected_at),
-    y: s.model_confidence * 100
+  // ECMWF forecast temp over time
+  const forecastData = (fcRows || []).map(r => ({
+    x: new Date(r.collected_at),
+    y: r.temp_value
   }));
 
-  // 2. Market price of consensus bucket (from signals)
-  const marketPriceData = (signals || []).filter(s => s.market_price != null).map(s => ({
-    x: new Date(s.collected_at),
-    y: s.market_price * 100
-  }));
-
-  // 3. Edge (from signals)
-  const edgeData = (signals || []).filter(s => s.edge != null).map(s => ({
-    x: new Date(s.collected_at),
-    y: s.edge * 100
-  }));
-
-  // 4. All market buckets over time (top 3 by latest price)
-  const bucketMap = {};
-  (marketData || []).forEach(m => {
-    if (!bucketMap[m.bucket]) bucketMap[m.bucket] = [];
-    bucketMap[m.bucket].push({ x: new Date(m.collected_at), y: m.price * 100 });
+  // Market favorite: group by collected_at, pick highest-priced bucket, extract its temp
+  const byTime = {};
+  (mkRows || []).forEach(r => {
+    const t = r.collected_at;
+    if (!byTime[t] || r.price > byTime[t].price) {
+      byTime[t] = { bucket: r.bucket, price: r.price };
+    }
   });
-
-  // Get top 3 buckets by latest price
-  const bucketLatest = Object.entries(bucketMap).map(([bucket, pts]) => ({
-    bucket, lastPrice: pts[pts.length - 1]?.y || 0
-  })).sort((a, b) => b.lastPrice - a.lastPrice).slice(0, 3);
-
-  const bucketColors = ['#60a5fa', '#a78bfa', '#fb923c'];
+  const favoriteData = Object.entries(byTime)
+    .map(([t, v]) => ({ x: new Date(t), y: bucketToTemp(v.bucket) }))
+    .filter(d => d.y != null);
 
   const datasets = [
     {
-      label: 'Model Confidence',
-      data: confData,
+      label: 'ECMWF Forecast',
+      data: forecastData,
       borderColor: '#4ade80',
       backgroundColor: 'rgba(74,222,128,0.1)',
-      borderWidth: 2,
-      pointRadius: 3,
+      borderWidth: 2.5,
+      pointRadius: 4,
+      pointBackgroundColor: '#4ade80',
       fill: false,
-      yAxisID: 'y',
+      tension: 0.3,
     },
     {
-      label: 'Consensus Bucket (Market)',
-      data: marketPriceData,
-      borderColor: '#f87171',
-      backgroundColor: 'rgba(248,113,113,0.1)',
-      borderWidth: 2,
-      pointRadius: 3,
+      label: 'Market Favorite',
+      data: favoriteData,
+      borderColor: '#60a5fa',
+      backgroundColor: 'rgba(96,165,250,0.1)',
+      borderWidth: 2.5,
+      pointRadius: 4,
+      pointBackgroundColor: '#60a5fa',
+      pointStyle: 'rectRot',
       fill: false,
-      yAxisID: 'y',
-    },
-    {
-      label: 'Edge (Δ)',
-      data: edgeData,
-      borderColor: '#facc15',
-      backgroundColor: 'rgba(250,204,21,0.15)',
-      borderWidth: 2,
-      borderDash: [5, 5],
-      pointRadius: 2,
-      fill: true,
-      yAxisID: 'y2',
+      tension: 0.3,
     },
   ];
 
-  // Add individual bucket lines
-  bucketLatest.forEach((b, i) => {
-    datasets.push({
-      label: b.bucket,
-      data: bucketMap[b.bucket],
-      borderColor: bucketColors[i],
-      borderWidth: 1,
-      pointRadius: 1,
-      borderDash: [3, 3],
-      fill: false,
-      yAxisID: 'y',
-    });
-  });
+  // Add shaded area between the two lines if they diverge
+  if (forecastData.length > 0 && favoriteData.length > 0) {
+    // Determine y-axis range
+    const allY = [...forecastData.map(d => d.y), ...favoriteData.map(d => d.y)];
+    var yMin = Math.floor(Math.min(...allY) - 2);
+    var yMax = Math.ceil(Math.max(...allY) + 2);
+  }
 
   charts[canvasId] = new Chart(canvas, {
     type: 'line',
@@ -474,7 +455,7 @@ async function loadCityChart(slug, targetDate, btn) {
           borderColor: '#2e2e3e',
           borderWidth: 1,
           callbacks: {
-            label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}%`
+            label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}${unit}`
           }
         }
       },
@@ -482,21 +463,17 @@ async function loadCityChart(slug, targetDate, btn) {
         x: {
           type: 'time',
           time: { tooltipFormat: 'MMM d, HH:mm', displayFormats: { hour: 'HH:mm', day: 'MMM d' } },
+          title: { display: true, text: 'Time (UTC)', color: '#666' },
           ticks: { color: '#555' },
           grid: { color: '#1a1a2a' },
         },
         y: {
           position: 'left',
-          min: 0, max: 100,
-          title: { display: true, text: 'Probability %', color: '#666' },
-          ticks: { color: '#555', callback: v => v + '%' },
+          min: yMin ?? undefined,
+          max: yMax ?? undefined,
+          title: { display: true, text: `Temperature (${unit})`, color: '#666' },
+          ticks: { color: '#555', callback: v => v + unit },
           grid: { color: '#1a1a2a' },
-        },
-        y2: {
-          position: 'right',
-          title: { display: true, text: 'Edge %', color: '#666' },
-          ticks: { color: '#555', callback: v => v + '%' },
-          grid: { drawOnChartArea: false },
         }
       }
     }
