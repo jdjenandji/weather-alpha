@@ -1,8 +1,17 @@
 import { createClient } from '@supabase/supabase-js';
+import { Trader } from './trader.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jbqkskwfjbejixyiuqpn.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_publishable_6TopOsnadhqteb8xltZiZw_epDDV-cm';
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// Trading config
+const trader = new Trader({
+  privateKey: process.env.POLY_PRIVATE_KEY,
+  walletAddress: process.env.POLY_WALLET_ADDRESS,
+  maxBet: process.env.POLY_MAX_BET || 20,
+  enabled: process.env.POLY_ENABLED === 'true',
+});
 
 const CITIES = [
   { name: "Paris", slug: "paris", lat: 49.0097, lon: 2.5479, unit: "C", tz: "Europe/Paris", hist: 0.87 },
@@ -63,6 +72,13 @@ async function fetchMarket(city, dateStr) {
 }
 
 async function collect() {
+  // Initialize trader if configured
+  await trader.init();
+  if (trader.initialized) {
+    const balance = await trader.getBalance();
+    console.log(`[trader] USDC.e balance: ${balance != null ? '$' + balance.toFixed(2) : 'unknown'}`);
+  }
+
   const now = new Date();
   const dates = [];
   for (let i = 0; i <= 2; i++) {
@@ -137,6 +153,48 @@ async function collect() {
           signal_type: signalType,
         });
         if (sigErr) console.error(`  signals insert error (${city.slug} ${dateStr}):`, sigErr.message);
+
+        // AUTO-TRADE on strong signals
+        if (signalType === 'strong' && trader.initialized && marketPrice != null) {
+          // Check if we already traded this city+date today
+          const { data: existing } = await supabase
+            .from('trades')
+            .select('id')
+            .eq('city', city.slug)
+            .eq('target_date', dateStr)
+            .limit(1);
+
+          if (!existing || existing.length === 0) {
+            const result = await trader.placeBuy({
+              citySlug: city.slug,
+              dateStr,
+              bucket: consensusBucket,
+              maxPrice: marketPrice + 0.02, // Willing to pay up to 2¢ above current
+              size: parseFloat(process.env.POLY_MAX_BET || 20),
+            });
+
+            if (result) {
+              // Log trade to Supabase
+              await supabase.from('trades').insert({
+                city: city.slug,
+                target_date: dateStr,
+                bucket: result.bucket,
+                price: result.price,
+                shares: result.shares,
+                cost: result.cost,
+                order_id: result.orderId,
+                signal_type: signalType,
+                edge,
+                models_agreeing: modelsAgreeing,
+              }).then(({ error }) => {
+                if (error) console.error('  trades insert error:', error.message);
+                else console.log(`  💰 Trade logged: ${city.slug} ${dateStr} ${result.bucket} @ ${result.price}`);
+              });
+            }
+          } else {
+            console.log(`  ⏭️ Already traded ${city.slug} ${dateStr}, skipping`);
+          }
+        }
 
       } catch (err) {
         console.error(`  ERROR ${city.slug} ${dateStr}:`, err.message);

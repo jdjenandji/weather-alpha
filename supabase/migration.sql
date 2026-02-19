@@ -40,6 +40,25 @@ create table if not exists signals (
 );
 create index if not exists idx_signals_lookup on signals (city, target_date, collected_at);
 
+-- Trades table
+create table if not exists trades (
+  id bigint generated always as identity primary key,
+  city text not null,
+  target_date date not null,
+  bucket text not null,
+  price real not null,
+  shares real not null,
+  cost real not null,
+  order_id text,
+  signal_type text not null,
+  edge real,
+  models_agreeing int,
+  status text default 'open',
+  pnl real,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_trades_lookup on trades (city, target_date);
+
 -- RLS
 alter table forecasts enable row level security;
 alter table market_prices enable row level security;
@@ -51,3 +70,8 @@ create policy "anon_select_market_prices" on market_prices for select to anon us
 create policy "anon_insert_market_prices" on market_prices for insert to anon with check (true);
 create policy "anon_select_signals" on signals for select to anon using (true);
 create policy "anon_insert_signals" on signals for insert to anon with check (true);
+
+alter table trades enable row level security;
+create policy "anon_select_trades" on trades for select to anon using (true);
+create policy "anon_insert_trades" on trades for insert to anon with check (true);
+create policy "anon_update_trades" on trades for update to anon using (true);
