@@ -294,9 +294,9 @@ const SUPABASE_KEY = 'sb_publishable_6TopOsnadhqteb8xltZiZw_epDDV-cm';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const CITIES = [
-  { name: "London", slug: "london", unit: "C", hist: 0.83, minConsensus: 2, tier: 'primary', flag: '🇬🇧' },
-  { name: "Paris", slug: "paris", unit: "C", hist: 0.75, minConsensus: 3, tier: 'secondary', flag: '🇫🇷' },
-  { name: "Chicago", slug: "chicago", unit: "F", hist: 0.83, minConsensus: 3, tier: 'secondary', flag: '🇺🇸' },
+  { name: "London", slug: "london", unit: "C", conf2: 0.83, conf3: 0.90, minConsensus: 2, tier: 'primary', flag: '🇬🇧' },
+  { name: "Paris", slug: "paris", unit: "C", conf2: 0.65, conf3: 0.75, minConsensus: 3, tier: 'secondary', flag: '🇫🇷' },
+  { name: "Chicago", slug: "chicago", unit: "F", conf2: 0.66, conf3: 0.83, minConsensus: 3, tier: 'secondary', flag: '🇺🇸' },
 ];
 
 const charts = {};
@@ -428,7 +428,7 @@ function renderCard(city, dateStr, forecasts, market) {
   const meetsThreshold = agreement >= (city.minConsensus || 2);
   const tradeable = ecmwfAgrees && meetsThreshold;
 
-  const modelConf = agreement >= 3 ? 0.87 : agreement >= 2 ? city.hist : 0;
+  const modelConf = agreement >= 3 ? city.conf3 : agreement >= 2 ? city.conf2 : 0;
   const targetMarket = market?.find(m => m.title === consensus);
   const edge = targetMarket && tradeable ? modelConf - targetMarket.price : 0;
 

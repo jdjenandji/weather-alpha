@@ -8,9 +8,9 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const MAX_BET = parseFloat(process.env.POLY_MAX_BET || 20);
 
 const CITIES = [
-  { name: "London", slug: "london", lat: 51.5053, lon: 0.0553, unit: "C", tz: "Europe/London", hist: 0.83, minConsensus: 2 },   // 83% on ≥2/3, primary market
-  { name: "Paris", slug: "paris", lat: 49.0097, lon: 2.5479, unit: "C", tz: "Europe/Paris", hist: 0.75, minConsensus: 3 },       // 75% on 3/3 only
-  { name: "Chicago", slug: "chicago", lat: 41.9742, lon: -87.9073, unit: "F", tz: "America/Chicago", hist: 0.83, minConsensus: 3 }, // 83% on 3/3 only
+  { name: "London", slug: "london", lat: 51.5053, lon: 0.0553, unit: "C", tz: "Europe/London", conf2: 0.83, conf3: 0.90, minConsensus: 2 },
+  { name: "Paris", slug: "paris", lat: 49.0097, lon: 2.5479, unit: "C", tz: "Europe/Paris", conf2: 0.65, conf3: 0.75, minConsensus: 3 },
+  { name: "Chicago", slug: "chicago", lat: 41.9742, lon: -87.9073, unit: "F", tz: "America/Chicago", conf2: 0.66, conf3: 0.83, minConsensus: 3 },
   // Buenos Aires removed — 60% consensus rate, not tradeable
 ];
 
@@ -132,7 +132,7 @@ async function collect() {
         const ecmwfAgrees = ecmwfBucket === consensusBucket;
 
         const marketPrice = market?.find(m => m.title === consensusBucket)?.price ?? null;
-        const modelConf = modelsAgreeing >= 3 ? 0.87 : modelsAgreeing >= 2 ? city.hist : 0;
+        const modelConf = modelsAgreeing >= 3 ? city.conf3 : modelsAgreeing >= 2 ? city.conf2 : 0;
         const meetsConsensus = modelsAgreeing >= city.minConsensus && ecmwfAgrees;
         const edge = (marketPrice != null && meetsConsensus) ? modelConf - marketPrice : null;
 
