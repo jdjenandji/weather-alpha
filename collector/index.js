@@ -363,7 +363,84 @@ async function resolve() {
   }
 }
 
-collect().catch(err => {
+// Check if this is a targeted ECMWF drop run
+// Run extra checks around known drop times: 00z at ~05:30 UTC, 12z at ~17:30 UTC
+async function checkEcmwfDrop() {
+  const hour = new Date().getUTCHours();
+  const min = new Date().getUTCMinutes();
+  
+  // Only check in the drop windows: 05:25-05:50 and 17:25-17:50
+  const in00zWindow = hour === 5 && min >= 25 && min <= 50;
+  const in12zWindow = hour === 17 && min >= 25 && min <= 50;
+  
+  if (!in00zWindow && !in12zWindow) return false;
+  
+  const runLabel = in00zWindow ? '00z' : '12z';
+  console.log(`[ecmwf-watch] In ${runLabel} drop window. Checking for new data...`);
+
+  // Compare current ECMWF forecast to last stored value for London tomorrow
+  const tomorrow = new Date();
+  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+  const dateStr = tomorrow.toISOString().slice(0, 10);
+
+  const { data: lastFc } = await supabase
+    .from('forecasts')
+    .select('temp_value, collected_at')
+    .eq('city', 'london')
+    .eq('target_date', dateStr)
+    .eq('model', 'ecmwf')
+    .order('collected_at', { ascending: false })
+    .limit(1);
+
+  const lastVal = lastFc?.[0]?.temp_value;
+  const lastTime = lastFc?.[0]?.collected_at;
+
+  // Fetch fresh
+  const city = CITIES.find(c => c.slug === 'london');
+  const forecasts = await fetchForecasts(city, dateStr);
+  const newVal = forecasts.ecmwf;
+
+  if (newVal == null) return false;
+
+  if (lastVal != null && Math.abs(newVal - lastVal) > 0.05) {
+    console.log(`[ecmwf-watch] 🔔 ECMWF ${runLabel} DROP DETECTED! London ${dateStr}: ${lastVal}→${newVal}°C (Δ${(newVal-lastVal).toFixed(2)})`);
+    return true;
+  } else if (lastVal != null) {
+    console.log(`[ecmwf-watch] No change (${lastVal}→${newVal}). Same run still cached.`);
+    return false;
+  }
+
+  return false; // first run, no comparison
+}
+
+async function main() {
+  const hour = new Date().getUTCHours();
+  const min = new Date().getUTCMinutes();
+
+  // Full collection every 15 min (0, 15, 30, 45)
+  const isFullRun = min % 15 < 5; // within 5 min of a 15-min mark
+
+  // ECMWF drop windows: 05:20-06:00 and 17:20-18:00 — run every time
+  const inDropWindow = (hour === 5 && min >= 20) || (hour === 6 && min <= 5)
+                    || (hour === 17 && min >= 20) || (hour === 18 && min <= 5);
+
+  if (!isFullRun && !inDropWindow) {
+    console.log(`[scheduler] Off-cycle run (${hour}:${String(min).padStart(2,'0')} UTC), not in drop window. Skipping.`);
+    return;
+  }
+
+  if (inDropWindow && !isFullRun) {
+    console.log(`[scheduler] 🔔 ECMWF drop window — running extra collection`);
+  }
+
+  await collect();
+  
+  if (inDropWindow) {
+    await checkEcmwfDrop();
+  }
+}
+
+main().catch(err => {
   console.error('Fatal:', err);
   process.exit(1);
 });
