@@ -175,15 +175,37 @@ async function fetchForecastsLive(slug, unit, dateStr) {
 }
 
 async function fetchMarketLive(slug, dateStr) {
+  // Try Polymarket API directly first
   const fmtDate = formatPolymarketDate(dateStr);
   const eventSlug = `highest-temperature-in-${slug}-on-${fmtDate}`;
   try {
     const data = await (await fetch(`https://gamma-api.polymarket.com/events?slug=${eventSlug}`)).json();
-    if (!data[0]) return null;
-    return data[0].markets.map(m => ({
-      title: m.groupItemTitle,
-      price: parseFloat(JSON.parse(m.outcomePrices)[0]),
-      volume: parseFloat(m.volume || "0"),
+    if (data[0]) {
+      return data[0].markets.map(m => ({
+        title: m.groupItemTitle,
+        price: parseFloat(JSON.parse(m.outcomePrices)[0]),
+        volume: parseFloat(m.volume || "0"),
+      })).sort((a, b) => b.price - a.price);
+    }
+  } catch { /* CORS or network error — fall through to Supabase */ }
+
+  // Fallback: read latest market prices from Supabase (written by collector)
+  try {
+    const { data: rows } = await sb
+      .from('market_prices')
+      .select('bucket, price, volume, collected_at')
+      .eq('city', slug)
+      .eq('target_date', dateStr)
+      .order('collected_at', { ascending: false })
+      .limit(50);
+    if (!rows || rows.length === 0) return null;
+    // Get only the latest collection timestamp's data
+    const latestTs = rows[0].collected_at;
+    const latest = rows.filter(r => r.collected_at === latestTs);
+    return latest.map(r => ({
+      title: r.bucket,
+      price: r.price,
+      volume: r.volume || 0,
     })).sort((a, b) => b.price - a.price);
   } catch { return null; }
 }
