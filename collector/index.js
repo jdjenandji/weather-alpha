@@ -137,6 +137,13 @@ async function collect() {
         // Calculate lead days (0 = same day, 1 = tomorrow, 2 = day after)
         const leadDays = Math.round((new Date(dateStr + 'T12:00:00Z') - now) / 86400000);
 
+        // Determine most recent model run cycle based on current UTC hour
+        // ECMWF: 00z available ~05:30, 12z ~17:30
+        // GFS/ICON: 00z ~04:00, 06z ~10:00, 12z ~16:00, 18z ~22:00
+        const h = now.getUTCHours();
+        const ecmwfRun = h >= 18 ? '12z' : h >= 6 ? '00z' : '12z_prev';
+        const gfsIconRun = h >= 22 ? '18z' : h >= 16 ? '12z' : h >= 10 ? '06z' : h >= 4 ? '00z' : '18z_prev';
+
         const forecastRows = Object.entries(forecasts).map(([model, val]) => ({
           city: city.slug,
           target_date: dateStr,
@@ -145,14 +152,15 @@ async function collect() {
           temp_unit: city.unit,
           bucket: getBucket(val, city.unit),
           lead_days: leadDays,
+          model_run: model === 'ecmwf' ? ecmwfRun : gfsIconRun,
         }));
 
         if (forecastRows.length > 0) {
           let { error } = await supabase.from('forecasts').insert(forecastRows);
-          if (error && error.message?.includes('lead_days')) {
-            // Column doesn't exist yet, retry without it
-            const rowsNoLead = forecastRows.map(({ lead_days, ...rest }) => rest);
-            ({ error } = await supabase.from('forecasts').insert(rowsNoLead));
+          if (error && (error.message?.includes('lead_days') || error.message?.includes('model_run'))) {
+            // Columns don't exist yet, retry without them
+            const rowsCompat = forecastRows.map(({ lead_days, model_run, ...rest }) => rest);
+            ({ error } = await supabase.from('forecasts').insert(rowsCompat));
           }
           if (error) console.error(`  forecasts insert error (${city.slug} ${dateStr}):`, error.message);
           else console.log(`  ✓ ${city.slug} ${dateStr}: ${forecastRows.length} forecasts (D+${leadDays})`);
