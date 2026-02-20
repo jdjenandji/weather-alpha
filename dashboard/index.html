@@ -205,28 +205,32 @@
     <div class="card" style="margin-bottom:16px">
       <div style="display:flex;flex-direction:column;gap:12px;font-size:0.9em">
         <div>
-          <div style="font-weight:600;color:#f87171;margin-bottom:2px">📉 30-day backtests are misleading</div>
-          <div style="color:#888">Paris went from 87% (30d) to 67% (90d). Always backtest with maximum available data.</div>
+          <div style="font-weight:600;color:#f87171;margin-bottom:2px">🚨 Reanalysis backtests are lies</div>
+          <div style="color:#888">Our original backtest used ERA5 reanalysis as "forecasts" — these are corrected with observations after the fact. Real accuracy from Previous Runs API is much lower. Always use actual forecast snapshots.</div>
         </div>
         <div>
-          <div style="font-weight:600;color:#4ade80;margin-bottom:2px">🏆 ECMWF is king, but not infallible</div>
-          <div style="color:#888">Best model for all Tier 1 cities. But when ECMWF disagrees with consensus, it's often because ECMWF had an outlier run (see London Trade #1: 7.9°C→7.2°C correction).</div>
+          <div style="font-weight:600;color:#f87171;margin-bottom:2px">📉 Accuracy crashes after D+0</div>
+          <div style="color:#888">London ECMWF: D+0 86%, D+1 63%, D+2 56%. Paris: D+0 68%, D+1 49%. Chicago: D+0 78%, D+1 32%. Only same-day forecasts have tradeable edge. D+1/D+2 are barely profitable.</div>
         </div>
         <div>
-          <div style="font-weight:600;color:#facc15;margin-bottom:2px">⚠️ GFS is unreliable outside Europe</div>
-          <div style="color:#888">25% match in Chicago, 21% in Buenos Aires. GFS agreement only adds value in London (69%) and Paris (43%).</div>
+          <div style="font-weight:600;color:#4ade80;margin-bottom:2px">🏆 ECMWF D+0 is the only reliable signal</div>
+          <div style="color:#888">86% bucket match on same-day London forecasts (MAE 0.17°C). This is where the real edge lives. Other models and longer lead times are noise.</div>
         </div>
         <div>
-          <div style="font-weight:600;color:#60a5fa;margin-bottom:2px">🎯 3/3 consensus is the real signal</div>
-          <div style="color:#888">London 90%, Chicago 83%, Paris 75%. But it fires rarely outside London. Quality over quantity.</div>
+          <div style="font-weight:600;color:#facc15;margin-bottom:2px">⚠️ GFS and ICON add little value</div>
+          <div style="color:#888">GFS D+0: London 68%, Paris 44%, Chicago 24%. ICON D+0: London 51%, Paris 48%. Consensus helps but the edge comes from ECMWF alone.</div>
         </div>
         <div>
-          <div style="font-weight:600;color:#a78bfa;margin-bottom:2px">📊 Seasonality matters</div>
-          <div style="color:#888">Paris accuracy declined from Nov (86%) to Feb (59%). Models struggle more with winter volatility.</div>
+          <div style="font-weight:600;color:#60a5fa;margin-bottom:2px">🎯 3/3 consensus D+0 is gold</div>
+          <div style="color:#888">London 91%, Paris 76%, Chicago 82% — but only at D+0. At D+1, 3/3 consensus drops to 68% (London), 47% (Paris), 17% (Chicago).</div>
         </div>
         <div>
-          <div style="font-weight:600;color:#f87171;margin-bottom:2px">🚫 Boundary filter doesn't work</div>
-          <div style="color:#888">Filtering trades near bucket boundaries (±0.3°C) actually reduced accuracy. Removed from logic.</div>
+          <div style="font-weight:600;color:#a78bfa;margin-bottom:2px">💡 Lead-time-dependent confidence is essential</div>
+          <div style="color:#888">Using flat conf values (e.g. 83% for ≥2/3) massively overstates edge on D+1/D+2 trades. Confidence must be indexed by [leadDays][agreement]. This was the single biggest correction to the system.</div>
+        </div>
+        <div>
+          <div style="font-weight:600;color:#f87171;margin-bottom:2px">🚫 Paris and Chicago D+1+ are untradeable</div>
+          <div style="color:#888">Paris consensus D+1: 44%. Chicago consensus D+1: 27%. These are worse than guessing the most likely bucket. Only trade D+0 or skip entirely.</div>
         </div>
       </div>
     </div>
