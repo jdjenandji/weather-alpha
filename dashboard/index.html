@@ -104,18 +104,23 @@
   <div style="max-width:900px">
 
     <div class="card" style="margin-bottom:16px;border-left:3px solid #4ade80">
-      <div style="font-size:1.2em;font-weight:700;margin-bottom:12px">🧠 Trading Logic v2</div>
-      <div style="font-size:0.85em;color:#888;margin-bottom:16px">Updated Feb 19 2026 — based on 90-day backtest (Nov 21 2025 → Feb 17 2026)</div>
+      <div style="font-size:1.2em;font-weight:700;margin-bottom:12px">🧠 Trading Logic v3</div>
+      <div style="font-size:0.85em;color:#888;margin-bottom:16px">Updated Feb 20 2026 — based on real forecast accuracy from 90-day Previous Runs API backfill (not reanalysis)</div>
 
       <div style="background:#0a0a12;border-radius:8px;padding:16px;margin-bottom:16px">
         <div style="font-size:0.8em;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Core Rules</div>
         <div style="display:flex;flex-direction:column;gap:8px;font-size:0.9em">
-          <div>1️⃣ <strong style="color:#4ade80">ECMWF must agree</strong> — If ECMWF disagrees with the consensus bucket, skip. ECMWF is the best model for all Tier 1 cities.</div>
-          <div>2️⃣ <strong style="color:#facc15">Per-city consensus threshold</strong> — London needs ≥1/3, Paris and Chicago need 3/3.</div>
-          <div>3️⃣ <strong style="color:#60a5fa">Lead-time-dependent confidence</strong> — Model confidence is based on real 90-day accuracy data from Previous Runs API. D+0 ≫ D+1 ≫ D+2. Edge = confidence − market price, must exceed 15%.</div>
-          <div>4️⃣ <strong style="color:#fb923c">One trade per city per date</strong> — No doubling down.</div>
-          <div>5️⃣ <strong style="color:#a78bfa">Monitor for shifts</strong> — If consensus breaks after entry, flag as BROKEN.</div>
+          <div>1️⃣ <strong style="color:#4ade80">D+0 is king</strong> — Only same-day forecasts have real edge. D+1 accuracy drops 20-45pp. D+2 is noise for most cities. Prioritize D+0 trades.</div>
+          <div>2️⃣ <strong style="color:#4ade80">ECMWF must agree</strong> — If ECMWF disagrees with the consensus bucket, skip. ECMWF alone at D+0: London 86%, Paris 68%, Chicago 78%.</div>
+          <div>3️⃣ <strong style="color:#facc15">Per-city consensus threshold</strong> — London ≥1/3 (ECMWF alone is good enough), Paris and Chicago need 3/3.</div>
+          <div>4️⃣ <strong style="color:#60a5fa">Lead-time-dependent confidence</strong> — Edge = conf[leadDays][agreement] − market price. Conf values from real Previous Runs accuracy. Must exceed 15% for strong signal.</div>
+          <div>5️⃣ <strong style="color:#a78bfa">Monitor for shifts</strong> — Model runs update 2-4x/day. Track ECMWF 00z/12z, GFS/ICON 00z/06z/12z/18z drops. If consensus breaks after entry, flag as BROKEN.</div>
         </div>
+      </div>
+
+      <div style="background:#2d1215;border:1px solid #7f1d1d;border-radius:8px;padding:12px;margin-bottom:16px;font-size:0.85em">
+        <div style="font-weight:700;color:#f87171;margin-bottom:4px">⚠️ v2 → v3 breaking change</div>
+        <div style="color:#fca5a5">v2 used flat confidence values (e.g. 83% for ≥2/3 everywhere). This was based on a flawed backtest that used ERA5 reanalysis instead of real forecasts. v3 uses measured accuracy by lead time. Many trades that showed "STRONG" in v2 now correctly show "NO EDGE" — especially D+1/D+2 trades for Paris and Chicago.</div>
       </div>
     </div>
 
@@ -181,23 +186,67 @@
       <div style="font-size:0.85em;color:#666;margin-top:6px">60% consensus rate · 3/3 fires only 3% of days · GFS 21% match · Not tradeable</div>
     </div>
 
-    <div style="font-size:0.8em;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #1e1e2e">Signal Flow</div>
+    <div style="font-size:0.8em;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #1e1e2e">Signal Flow (v3)</div>
     <div class="card" style="margin-bottom:16px">
       <div style="font-family:monospace;font-size:0.85em;line-height:2;color:#aaa">
-        <div>┌─ Fetch ECMWF, GFS, ICON forecasts</div>
-        <div>├─ Compute bucket for each model</div>
+        <div>┌─ Fetch ECMWF, GFS, ICON forecasts from Open-Meteo</div>
+        <div>├─ Compute bucket for each model (1°C or 2°F)</div>
         <div>├─ Find consensus bucket (most common)</div>
-        <div>├─ <span style="color:#f87171">ECMWF disagrees? → SKIP</span></div>
-        <div>├─ <span style="color:#f87171">Below city minConsensus? → SKIP</span></div>
+        <div>├─ Compute lead time: D+0 (today), D+1 (tomorrow), D+2</div>
+        <div>├─ <span style="color:#f87171">ECMWF disagrees with consensus? → SKIP</span></div>
+        <div>├─ <span style="color:#f87171">Below city minConsensus (London ≥1, Paris/Chicago ≥3)? → SKIP</span></div>
+        <div>├─ Look up confidence = conf[leadDays][agreement]</div>
+        <div>│  <span style="color:#555">e.g. London D+0 ≥2/3 → 83%, London D+1 ≥2/3 → 58%</span></div>
         <div>├─ Fetch Polymarket odds for consensus bucket</div>
-        <div>├─ Calculate edge = model_confidence − market_price</div>
-        <div>├─ <span style="color:#f87171">Edge ≤ 15%? → SKIP</span></div>
-        <div>├─ <span style="color:#4ade80">✅ PAPER TRADE: BUY consensus bucket YES</span></div>
+        <div>├─ Calculate edge = confidence − market_price</div>
+        <div>├─ <span style="color:#f87171">Edge ≤ 5%? → SKIP (NO EDGE)</span></div>
+        <div>├─ <span style="color:#facc15">Edge 5-15%? → ⚠️ MARGINAL</span></div>
+        <div>├─ <span style="color:#4ade80">Edge > 15%? → 🔥 STRONG → PAPER TRADE</span></div>
+        <div>├─ Store forecast snapshot with lead_days + model_run tag</div>
+        <div>├─ Fetch order book depth at entry price</div>
         <div>├─ Every 15 min: monitor for forecast shifts</div>
-        <div>│  ├─ 3/3 still agree → ✅ HOLDING</div>
-        <div>│  ├─ 2/3 agree → ⚠️ DRIFTING</div>
+        <div>│  ├─ All models still agree → ✅ HOLDING</div>
+        <div>│  ├─ 1 model drifted → ⚠️ DRIFTING</div>
         <div>│  └─ Consensus flipped → 🚨 BROKEN</div>
+        <div>├─ Model drop windows: extra collection at</div>
+        <div>│  ├─ ECMWF 00z (~05:30 UTC), 12z (~17:30 UTC)</div>
+        <div>│  ├─ GFS/ICON 00z (~04:00), 06z (~10:00), 12z (~16:00), 18z (~22:00)</div>
+        <div>│  └─ 🔔 Log forecast changes + bucket flips</div>
         <div>└─ Next day: auto-resolve via ERA5 archive → WON/LOST + P&L</div>
+      </div>
+    </div>
+
+    <div style="font-size:0.8em;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #1e1e2e">Confidence Matrix (from real data)</div>
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-size:0.85em;color:#888;margin-bottom:8px">conf[leadDays][agreement] — used to compute edge. Source: 90-day Previous Runs API backfill.</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+        <div>
+          <div style="font-weight:700;margin-bottom:4px">🇬🇧 London</div>
+          <table style="width:100%;border-collapse:collapse;font-size:0.8em;text-align:center">
+            <tr style="color:#666"><td></td><td>≥1/3</td><td>≥2/3</td><td>3/3</td></tr>
+            <tr><td style="text-align:left;color:#888">D+0</td><td style="color:#4ade80">81%</td><td style="color:#4ade80">83%</td><td style="color:#4ade80">91%</td></tr>
+            <tr><td style="text-align:left;color:#888">D+1</td><td style="color:#f87171">57%</td><td style="color:#f87171">58%</td><td style="color:#facc15">68%</td></tr>
+            <tr><td style="text-align:left;color:#888">D+2</td><td style="color:#f87171">52%</td><td style="color:#f87171">55%</td><td style="color:#facc15">65%</td></tr>
+          </table>
+        </div>
+        <div>
+          <div style="font-weight:700;margin-bottom:4px">🇫🇷 Paris</div>
+          <table style="width:100%;border-collapse:collapse;font-size:0.8em;text-align:center">
+            <tr style="color:#666"><td></td><td>≥1/3</td><td>≥2/3</td><td>3/3</td></tr>
+            <tr><td style="text-align:left;color:#888">D+0</td><td style="color:#facc15">61%</td><td style="color:#facc15">66%</td><td style="color:#facc15">76%</td></tr>
+            <tr><td style="text-align:left;color:#888">D+1</td><td style="color:#f87171">42%</td><td style="color:#f87171">44%</td><td style="color:#f87171">47%</td></tr>
+            <tr><td style="text-align:left;color:#888">D+2</td><td style="color:#f87171">32%</td><td style="color:#f87171">32%</td><td style="color:#f87171">33%</td></tr>
+          </table>
+        </div>
+        <div>
+          <div style="font-weight:700;margin-bottom:4px">🇺🇸 Chicago</div>
+          <table style="width:100%;border-collapse:collapse;font-size:0.8em;text-align:center">
+            <tr style="color:#666"><td></td><td>≥1/3</td><td>≥2/3</td><td>3/3</td></tr>
+            <tr><td style="text-align:left;color:#888">D+0</td><td style="color:#facc15">70%</td><td style="color:#facc15">66%</td><td style="color:#4ade80">82%</td></tr>
+            <tr><td style="text-align:left;color:#888">D+1</td><td style="color:#f87171">30%</td><td style="color:#f87171">27%</td><td style="color:#f87171">17%</td></tr>
+            <tr><td style="text-align:left;color:#888">D+2</td><td style="color:#f87171">22%</td><td style="color:#f87171">23%</td><td style="color:#f87171">13%</td></tr>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -238,12 +287,14 @@
     <div style="font-size:0.8em;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #1e1e2e">Data Sources</div>
     <div class="card">
       <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:0.85em">
-        <span style="color:#666">Forecasts</span><span>Open-Meteo (ECMWF IFS 0.25°, GFS, ICON)</span>
-        <span style="color:#666">Market data</span><span>Polymarket Gamma API</span>
+        <span style="color:#666">Forecasts</span><span>Open-Meteo (ECMWF IFS 0.25°, GFS Seamless, ICON Seamless)</span>
+        <span style="color:#666">Accuracy data</span><span>Open-Meteo Previous Runs API (real forecast snapshots, not reanalysis)</span>
+        <span style="color:#666">Market data</span><span>Polymarket Gamma API + CLOB order book</span>
         <span style="color:#666">Resolution</span><span>Weather Underground (airport METAR stations)</span>
-        <span style="color:#666">Backtest actuals</span><span>ERA5 reanalysis (proxy for WU, small delta possible)</span>
-        <span style="color:#666">ECMWF schedule</span><span>00z available ~05:30 UTC · 12z available ~17:30 UTC</span>
-        <span style="color:#666">Collection interval</span><span>Every 15 minutes via Railway cron</span>
+        <span style="color:#666">Actuals (backtest)</span><span>ERA5 reanalysis via Open-Meteo Archive API</span>
+        <span style="color:#666">Model schedules</span><span>ECMWF: 00z ~05:30, 12z ~17:30 · GFS/ICON: 00z/06z/12z/18z (~4h after init)</span>
+        <span style="color:#666">Collection</span><span>Every 15 min + extra runs during model drop windows (6 windows/day)</span>
+        <span style="color:#666">Storage</span><span>Supabase (forecasts, market_prices, signals, trades, forecast_accuracy, order_depth)</span>
       </div>
     </div>
 
