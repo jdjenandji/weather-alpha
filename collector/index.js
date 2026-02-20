@@ -134,6 +134,9 @@ async function collect() {
       try {
         // Fetch forecasts
         const forecasts = await fetchForecasts(city, dateStr);
+        // Calculate lead days (0 = same day, 1 = tomorrow, 2 = day after)
+        const leadDays = Math.round((new Date(dateStr + 'T12:00:00Z') - now) / 86400000);
+
         const forecastRows = Object.entries(forecasts).map(([model, val]) => ({
           city: city.slug,
           target_date: dateStr,
@@ -141,12 +144,18 @@ async function collect() {
           temp_value: val,
           temp_unit: city.unit,
           bucket: getBucket(val, city.unit),
+          lead_days: leadDays,
         }));
 
         if (forecastRows.length > 0) {
-          const { error } = await supabase.from('forecasts').insert(forecastRows);
+          let { error } = await supabase.from('forecasts').insert(forecastRows);
+          if (error && error.message?.includes('lead_days')) {
+            // Column doesn't exist yet, retry without it
+            const rowsNoLead = forecastRows.map(({ lead_days, ...rest }) => rest);
+            ({ error } = await supabase.from('forecasts').insert(rowsNoLead));
+          }
           if (error) console.error(`  forecasts insert error (${city.slug} ${dateStr}):`, error.message);
-          else console.log(`  ✓ ${city.slug} ${dateStr}: ${forecastRows.length} forecasts`);
+          else console.log(`  ✓ ${city.slug} ${dateStr}: ${forecastRows.length} forecasts (D+${leadDays})`);
         }
 
         // Fetch market
@@ -248,6 +257,7 @@ async function collect() {
   console.log('Collection done. Running monitor...');
   await monitor();
   await resolve();
+  await computeAccuracy();
   console.log('All done.');
 }
 
@@ -405,6 +415,179 @@ async function resolve() {
       await new Promise(r => setTimeout(r, 300));
     } catch (err) {
       console.error(`  [resolve] Error resolving ${trade.city} ${trade.target_date}:`, err.message);
+    }
+  }
+}
+
+// ============================================================
+// ACCURACY — Compute forecast accuracy by lead time from stored data
+// ============================================================
+async function computeAccuracy() {
+  console.log('[accuracy] Computing forecast accuracy by lead time...');
+
+  for (const city of CITIES) {
+    // Get all resolved trades to find dates with known actuals
+    const { data: resolvedTrades } = await supabase
+      .from('trades')
+      .select('target_date, bucket, status')
+      .eq('city', city.slug)
+      .in('status', ['won', 'lost']);
+
+    if (!resolvedTrades || resolvedTrades.length === 0) continue;
+
+    // Get ERA5 actuals for those dates
+    const targetDates = [...new Set(resolvedTrades.map(t => t.target_date))].sort();
+    if (targetDates.length === 0) continue;
+
+    const tempUnit = city.unit === "F" ? "&temperature_unit=fahrenheit" : "";
+    let actualByDate = {};
+    try {
+      const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${city.lat}&longitude=${city.lon}&daily=temperature_2m_max&timezone=${encodeURIComponent(city.tz)}&start_date=${targetDates[0]}&end_date=${targetDates[targetDates.length - 1]}${tempUnit}`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.daily) {
+          data.daily.time.forEach((d, i) => {
+            if (data.daily.temperature_2m_max[i] != null) {
+              actualByDate[d] = data.daily.temperature_2m_max[i];
+            }
+          });
+        }
+      }
+    } catch (e) {
+      console.error(`[accuracy] ERA5 fetch error for ${city.slug}:`, e.message);
+      continue;
+    }
+
+    // Get all stored forecasts for these dates
+    const { data: storedForecasts } = await supabase
+      .from('forecasts')
+      .select('target_date, model, temp_value, bucket, lead_days, collected_at')
+      .eq('city', city.slug)
+      .in('target_date', targetDates)
+      .order('collected_at', { ascending: true });
+
+    if (!storedForecasts || storedForecasts.length === 0) continue;
+
+    // Group by model → lead_days → accuracy
+    const stats = {}; // model → lead_days → { matches, total, errors[] }
+    // For each date, use the LAST forecast at each lead_days (most recent snapshot)
+    const lastForecast = {}; // `${model}|${target_date}|${lead_days}` → row
+    for (const fc of storedForecasts) {
+      const key = `${fc.model}|${fc.target_date}|${fc.lead_days ?? 'null'}`;
+      lastForecast[key] = fc;
+    }
+
+    for (const [key, fc] of Object.entries(lastForecast)) {
+      const actual = actualByDate[fc.target_date];
+      if (actual == null || fc.lead_days == null) continue;
+
+      const actualBucket = getBucket(actual, city.unit);
+      const match = fc.bucket === actualBucket;
+      const error = Math.abs(fc.temp_value - actual);
+
+      if (!stats[fc.model]) stats[fc.model] = {};
+      if (!stats[fc.model][fc.lead_days]) stats[fc.model][fc.lead_days] = { matches: 0, total: 0, errors: [] };
+
+      stats[fc.model][fc.lead_days].matches += match ? 1 : 0;
+      stats[fc.model][fc.lead_days].total += 1;
+      stats[fc.model][fc.lead_days].errors.push(error);
+    }
+
+    // Also compute consensus accuracy by lead_days
+    // Group stored forecasts by target_date + lead_days snapshot
+    const snapshots = {}; // `${target_date}|${lead_days}` → { model: bucket }
+    for (const [key, fc] of Object.entries(lastForecast)) {
+      if (fc.lead_days == null) continue;
+      const skey = `${fc.target_date}|${fc.lead_days}`;
+      if (!snapshots[skey]) snapshots[skey] = { target_date: fc.target_date, lead_days: fc.lead_days, models: {} };
+      snapshots[skey].models[fc.model] = fc.bucket;
+    }
+
+    const consensusStats = {}; // lead_days → { matches, total }
+    for (const snap of Object.values(snapshots)) {
+      const actual = actualByDate[snap.target_date];
+      if (actual == null) continue;
+      const actualBucket = getBucket(actual, city.unit);
+
+      const buckets = Object.values(snap.models);
+      const counts = {};
+      buckets.forEach(b => counts[b] = (counts[b] || 0) + 1);
+      const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+      if (!top) continue;
+
+      const consensusBucket = top[0];
+      const agreement = top[1];
+
+      if (!consensusStats[snap.lead_days]) consensusStats[snap.lead_days] = {};
+      for (const minCons of [1, 2, 3]) {
+        if (!consensusStats[snap.lead_days][minCons]) consensusStats[snap.lead_days][minCons] = { matches: 0, total: 0 };
+        if (agreement >= minCons) {
+          consensusStats[snap.lead_days][minCons].total++;
+          if (consensusBucket === actualBucket) consensusStats[snap.lead_days][minCons].matches++;
+        }
+      }
+    }
+
+    // Print results
+    console.log(`\n  📊 ${city.name} — Forecast Accuracy by Lead Time (from ${Object.keys(actualByDate).length} resolved days)`);
+    for (const model of Object.keys(stats).sort()) {
+      for (const ld of Object.keys(stats[model]).sort((a, b) => a - b)) {
+        const s = stats[model][ld];
+        const mae = (s.errors.reduce((a, b) => a + b, 0) / s.errors.length).toFixed(2);
+        const rate = (s.matches / s.total * 100).toFixed(1);
+        console.log(`    ${model.toUpperCase().padEnd(6)} D+${ld}: ${rate}% bucket match (${s.matches}/${s.total}) | MAE ${mae}${city.unit === 'F' ? '°F' : '°C'}`);
+      }
+    }
+    for (const ld of Object.keys(consensusStats).sort((a, b) => a - b)) {
+      for (const minCons of [1, 2, 3]) {
+        const s = consensusStats[ld][minCons];
+        if (s && s.total > 0) {
+          console.log(`    CONS≥${minCons}/3 D+${ld}: ${(s.matches / s.total * 100).toFixed(1)}% (${s.matches}/${s.total})`);
+        }
+      }
+    }
+
+    // Store accuracy summary to Supabase
+    const accuracyRows = [];
+    for (const model of Object.keys(stats)) {
+      for (const ld of Object.keys(stats[model])) {
+        const s = stats[model][ld];
+        const mae = s.errors.reduce((a, b) => a + b, 0) / s.errors.length;
+        accuracyRows.push({
+          city: city.slug,
+          model,
+          lead_days: parseInt(ld),
+          bucket_match_rate: s.matches / s.total,
+          mae,
+          sample_size: s.total,
+          computed_at: new Date().toISOString(),
+        });
+      }
+    }
+    for (const ld of Object.keys(consensusStats)) {
+      for (const minCons of [1, 2, 3]) {
+        const s = consensusStats[ld][minCons];
+        if (s && s.total > 0) {
+          accuracyRows.push({
+            city: city.slug,
+            model: `consensus_gte${minCons}`,
+            lead_days: parseInt(ld),
+            bucket_match_rate: s.matches / s.total,
+            mae: null,
+            sample_size: s.total,
+            computed_at: new Date().toISOString(),
+          });
+        }
+      }
+    }
+
+    if (accuracyRows.length > 0) {
+      const { error } = await supabase.from('forecast_accuracy').upsert(accuracyRows, {
+        onConflict: 'city,model,lead_days',
+      });
+      if (error) console.error(`[accuracy] Upsert error:`, error.message);
+      else console.log(`  ✅ Stored ${accuracyRows.length} accuracy rows for ${city.name}`);
     }
   }
 }
