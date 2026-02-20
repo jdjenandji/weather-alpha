@@ -1,131 +1,59 @@
-# 🌡️ Weather Alpha
+# 🌡️ Weather Alpha — Post-Mortem
 
-Automated Polymarket weather trading bot with multi-model forecast consensus, real-time monitoring, and historical backtesting.
+**Status: ARCHIVED** — No tradeable edge found.
 
-## How It Works
+## What This Was
 
-1. **Collect** — Fetches ECMWF, GFS, ICON forecasts + Polymarket odds every 5 min
-2. **Signal** — Detects when models agree on a temperature bucket that the market underprices
-3. **Trade** — Auto paper-trades strong signals (real trading ready, pending geo-proxy)
-4. **Monitor** — Tracks forecast shifts against open positions (HOLDING → DRIFTING → BROKEN)
-5. **Resolve** — Auto-closes trades using ERA5 archive actuals, calculates P&L
+An attempt to trade Polymarket weather temperature markets using ECMWF/GFS/ICON weather model forecasts. The hypothesis: weather models are more accurate than market prices at predicting daily high temperatures, creating exploitable edge.
 
-## Architecture
+## What We Built
 
-```
-┌─────────────┐     ┌──────────┐     ┌───────────┐
-│  Open-Meteo  │────▶│          │────▶│  Supabase  │
-│  (forecasts) │     │ Collector│     │  (7 tables)│
-├─────────────┤     │ (Railway)│     └─────┬─────┘
-│  Polymarket  │────▶│  */5 min │           │
-│  (odds+CLOB) │     └──────────┘     ┌─────▼─────┐
-└─────────────┘                       │ Dashboard  │
-                                      │ (static)   │
-                                      └───────────┘
-```
+- **Collector** (`collector/`) — Node.js on Railway, fetched forecasts + market prices every 15 min
+- **Dashboard** (`dashboard/index.html`) — Single HTML file with 8 tabs: live signals, delta charts, trades, backtest, model drops, market lag, D0 vs D1 comparison, accuracy by run
+- **Backtest** (`backtest/`) — 90-day backtest + Polymarket CLOB historical price scraper
 
-- **Collector** (`collector/`) — Node.js, runs on Railway cron every 5 min. Writes forecasts, market prices, signals, paper trades, alerts to Supabase.
-- **Dashboard** (`dashboard/index.html`) — Single HTML file, no build step. Reads from Supabase + live APIs. Chart.js for visualizations.
-- **Backtest** (`backtest/`) — 90-day backtest + historical Polymarket price scraper.
+## Why It Doesn't Work
 
-## Trading Logic (v2)
+### The Resolution Source Problem
 
-Based on 90-day backtest (Nov 2025 → Feb 2026):
+Polymarket London temperature markets resolve against **Weather Underground's EGLC (London City Airport) station data**, not ERA5 reanalysis or model grid cells.
 
-### Active Markets
+ECMWF/GFS/ICON forecast a grid cell average. The EGLC station consistently reads **~1°C higher** than the grid cell. This is enough to flip the 1°C temperature bucket ~53% of the time.
 
-| City | Station | Consensus Req | Win Rate (≥2/3) | Win Rate (3/3) | ECMWF MAE |
-|------|---------|--------------|-----------------|----------------|-----------|
-| 🇬🇧 London | EGLC | ≥2/3 (primary) | **83%** | **90%** | 0.17°C |
-| 🇫🇷 Paris | LFPG | 3/3 only | 65% | **75%** | 0.29°C |
-| 🇺🇸 Chicago | KORD | 3/3 only | 66% | **83%** | 0.42°F |
+### The Numbers (90-day backtest, Nov 2025 – Feb 2026)
 
-Buenos Aires removed — 60% consensus rate, not tradeable.
+| Metric | vs ERA5 (wrong) | vs WU/EGLC (correct) |
+|--------|-----------------|----------------------|
+| D0 same-day accuracy | 86% | **42%** |
+| D1 night-before accuracy | 63% | **30%** |
+| Edge (w/ market prices) | 37% | **4%** |
 
-### Signal Filters
+A +0.5°C bias correction improves D0 to ~60%, but that's barely breakeven after spread/fees.
 
-1. **ECMWF must agree** — If ECMWF disagrees with consensus, skip (ECMWF is the best model for all cities)
-2. **Per-city consensus threshold** — London ≥2/3, Paris and Chicago need 3/3
-3. **Edge > 15%** — Model confidence minus market price must exceed 15%
-4. **Max entry price ≤ 50¢** — If market already agrees, there's no edge
-5. **One trade per city per date** — No doubling down
-6. **Forecast shift monitor** — Alerts on DRIFTING (1 model left) and BROKEN (consensus flipped)
+### Other Dead Ends
 
-### ECMWF Drop Detection
+- **Market lag**: Market prices at 05:30 UTC average ~50¢ for the forecast bucket — no systematic mispricing
+- **Informational edge**: METAR data from EGLC is public and near-real-time; no speed advantage
+- **WU delay**: WU publishes with some delay, but serious traders already watch raw METAR
 
-ECMWF 00z drops at ~05:30 UTC, 12z at ~17:30 UTC. The collector runs every 5 min but only does full collection on 15-min marks — **except during drop windows** (05:20-06:00 and 17:20-18:00 UTC) where it runs every cycle to catch new forecasts within ~2.5 min.
+## Key Lesson
 
-### Key Finding: Entry Timing
+The forecast models are good at predicting what they're designed to predict (grid cell averages). But prediction markets resolve against specific station observations, and the station-vs-grid divergence destroys the edge. Any weather prediction market strategy must start by understanding the **exact resolution source** and whether models can predict it accurately.
 
-From 31,802 historical Polymarket price points:
+## Tech Stack
 
-| Entry Time (D-1) | London | Chicago | Paris |
-|-------------------|--------|---------|-------|
-| 06:00 UTC (post-00z) | **33.6¢** | 41.4¢ | 49.0¢ |
-| 11:00 UTC | 37.8¢ | 42.4¢ | 49.4¢ |
-| 18:00 UTC (post-12z) | 39.1¢ | 49.7¢ | 56.3¢ |
+- Supabase (Postgres) — `market_prices`, `forecasts`, `forecast_accuracy`, `model_drops` tables
+- Open-Meteo Previous Runs API — historical forecast snapshots
+- Weather Underground API — actual station observations (EGLC)
+- Polymarket CLOB API — historical price data
+- Chart.js — dashboard visualizations
+- Vercel — dashboard hosting
+- Railway — collector hosting
 
-06:00 UTC is the cheapest entry — right after the ECMWF 00z drop.
+## Dashboard
 
-## Dashboard Tabs
+Still live at the Vercel URL if you want to explore the data. The **🔀 D0 vs D1** tab shows the full picture with correct WU actuals.
 
-1. **📡 Live Signals** — Real-time forecasts + Polymarket odds with v2 logic (ECMWF check, tier badges, per-city thresholds)
-2. **📈 Delta Charts** — Time-series: ECMWF forecast temp vs market favorite temp
-3. **💰 Trades** — Paper trades with current price, unrealized P&L, forecast monitor alerts
-4. **📊 Backtest** — 90-day results, model accuracy charts, monthly breakdown, realistic P&L from historical prices
-5. **🧠 Trading Logic** — Full strategy documentation, signal flow, learnings
+---
 
-## Supabase Tables
-
-| Table | Purpose |
-|-------|---------|
-| `forecasts` | ECMWF/GFS/ICON forecast temps per city per date |
-| `market_prices` | Polymarket odds per bucket per collection |
-| `signals` | Computed signals (consensus, edge, signal type) |
-| `trades` | Paper trades (entry, cost, shares, status, P&L) |
-| `trade_alerts` | Forecast shift alerts (holding/drifting/broken) |
-| `backtest_results` | 90-day daily backtest data |
-| `backtest_summary` | Per-city backtest summary stats |
-| `price_history` | Historical Polymarket CLOB price timeseries |
-
-## Setup
-
-### 1. Supabase
-Run `supabase/migration.sql` in your Supabase SQL editor.
-
-### 2. Collector (Railway)
-Connect repo to Railway, create a cron service:
-- **Root Directory:** `collector`
-- **Build:** `npm install`
-- **Start:** `node index.js`
-- **Cron:** `*/5 * * * *`
-- **Env vars:**
-  - `SUPABASE_URL`
-  - `SUPABASE_KEY`
-  - `POLY_MAX_BET` (default: 20)
-  - `POLY_MAX_ENTRY` (default: 0.50)
-
-### 3. Dashboard (Railway)
-Same repo, separate service:
-- **Root Directory:** `dashboard`
-- **Start:** `npx serve -s . -l $PORT`
-
-### 4. Backtest (manual)
-```bash
-cd backtest && npm install
-node backtest.js          # 90-day model accuracy backtest
-node scrape-history.js    # Scrape Polymarket historical prices
-```
-
-## Data Sources
-
-| Source | Purpose |
-|--------|---------|
-| [Open-Meteo](https://open-meteo.com) | ECMWF IFS 0.25°, GFS, ICON forecasts + ERA5 archive |
-| [Polymarket Gamma API](https://gamma-api.polymarket.com) | Market odds, event slugs |
-| [Polymarket CLOB](https://clob.polymarket.com) | Historical prices, order books |
-| [Weather Underground](https://wunderground.com) | Resolution source (airport METAR stations) |
-
-## Live Trading (TODO)
-
-Currently paper trading only. Live trading via `@polymarket/clob-client` is implemented in `collector/trader.js` but disabled due to Polymarket geo-restrictions (EU/US blocked). Requires a proxy in an allowed country (Canada, Brazil, Japan, etc.).
+*Built Feb 2026. RIP.*
