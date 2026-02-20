@@ -445,6 +445,35 @@ async function fetchModelTimes(slug, dateStr) {
   } catch { return {}; }
 }
 
+function getNextModelUpdate(model) {
+  // Known schedules (approximate availability on Open-Meteo):
+  // ECMWF: 00z ~05:30, 12z ~17:30
+  // GFS: 00z ~05:00, 06z ~11:00, 12z ~17:00, 18z ~23:00
+  // ICON: 00z ~04:00, 06z ~10:00, 12z ~16:00, 18z ~22:00
+  const now = new Date();
+  const h = now.getUTCHours();
+  const schedules = {
+    ecmwf: [{ run: '00z', h: 5, m: 30 }, { run: '12z', h: 17, m: 30 }],
+    gfs:   [{ run: '00z', h: 5, m: 0 }, { run: '06z', h: 11, m: 0 }, { run: '12z', h: 17, m: 0 }, { run: '18z', h: 23, m: 0 }],
+    icon:  [{ run: '00z', h: 4, m: 0 }, { run: '06z', h: 10, m: 0 }, { run: '12z', h: 16, m: 0 }, { run: '18z', h: 22, m: 0 }],
+  };
+  const sched = schedules[model];
+  if (!sched) return '—';
+
+  const nowMin = h * 60 + now.getUTCMinutes();
+  for (const s of sched) {
+    const sMin = s.h * 60 + s.m;
+    if (sMin > nowMin) {
+      const diff = sMin - nowMin;
+      if (diff <= 60) return `${s.run} ~${diff}min`;
+      return `${s.run} ~${String(s.h).padStart(2,'0')}:${String(s.m).padStart(2,'0')}`;
+    }
+  }
+  // Next is tomorrow's first run
+  const first = sched[0];
+  return `${first.run} tmrw ~${String(first.h).padStart(2,'0')}:${String(first.m).padStart(2,'0')}`;
+}
+
 function renderCard(city, dateStr, forecasts, market, modelTimes) {
   const u = city.unit === "F" ? "°F" : "°C";
   const models = Object.entries(forecasts).filter(([k,v]) => v != null);
@@ -512,7 +541,8 @@ function renderCard(city, dateStr, forecasts, market, modelTimes) {
     const border = isEcmwf ? 'border:1px solid #4ade8044;' : '';
     const mTime = (modelTimes || {})[model];
     const mTimeStr = mTime ? new Date(mTime).toLocaleString('en-GB', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'UTC' }) : '';
-    html += `<div class="model-box" style="${border}"><div class="model-name">${model}${isEcmwf ? ' ★' : ''}</div><div class="model-val ${isCons?'agree':'disagree'}">${val.toFixed(1)}${u}</div><div class="model-bucket ${isCons?'agree':'disagree'}">→ ${bucket}</div>${mTimeStr ? '<div style="font-size:0.6em;color:#444;margin-top:3px">Δ '+mTimeStr+'</div>' : ''}</div>`;
+    const nextUpdate = getNextModelUpdate(model);
+    html += `<div class="model-box" style="${border}"><div class="model-name">${model}${isEcmwf ? ' ★' : ''}</div><div class="model-val ${isCons?'agree':'disagree'}">${val.toFixed(1)}${u}</div><div class="model-bucket ${isCons?'agree':'disagree'}">→ ${bucket}</div>${mTimeStr ? '<div style="font-size:0.6em;color:#444;margin-top:3px">Δ '+mTimeStr+'</div>' : ''}<div style="font-size:0.6em;color:#333;margin-top:1px">next: ${nextUpdate}</div></div>`;
   }
   html += `</div>`;
 
