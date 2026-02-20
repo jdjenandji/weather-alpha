@@ -294,7 +294,7 @@ const SUPABASE_KEY = 'sb_publishable_6TopOsnadhqteb8xltZiZw_epDDV-cm';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const CITIES = [
-  { name: "London", slug: "london", unit: "C", conf2: 0.83, conf3: 0.90, minConsensus: 2, tier: 'primary', flag: '🇬🇧' },
+  { name: "London", slug: "london", unit: "C", conf1: 0.75, conf2: 0.83, conf3: 0.90, minConsensus: 1, tier: 'primary', flag: '🇬🇧' },
   { name: "Paris", slug: "paris", unit: "C", conf2: 0.65, conf3: 0.75, minConsensus: 3, tier: 'secondary', flag: '🇫🇷' },
   { name: "Chicago", slug: "chicago", unit: "F", conf2: 0.66, conf3: 0.83, minConsensus: 3, tier: 'secondary', flag: '🇺🇸' },
 ];
@@ -514,7 +514,7 @@ function renderCard(city, dateStr, forecasts, market, modelTimes) {
   const meetsThreshold = agreement >= (city.minConsensus || 2);
   const tradeable = ecmwfAgrees && meetsThreshold;
 
-  const modelConf = agreement >= 3 ? city.conf3 : agreement >= 2 ? city.conf2 : 0;
+  const modelConf = agreement >= 3 ? city.conf3 : agreement >= 2 ? city.conf2 : (city.conf1 || 0);
   const targetMarket = market?.find(m => m.title === consensus);
   const edge = targetMarket && tradeable ? modelConf - targetMarket.price : 0;
 
@@ -963,7 +963,7 @@ async function renderRealisticPnl() {
     <div style="font-size:0.8em;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #1e1e2e">💰 Realistic Entry Prices (from Polymarket CLOB)</div>`;
 
   const cityConfigs = [
-    { slug: 'london', name: 'London', color: '#4ade80', conf: 0.83, minCons: 2 },
+    { slug: 'london', name: 'London', color: '#4ade80', conf: 0.83, minCons: 1 },
     { slug: 'paris', name: 'Paris', color: '#60a5fa', conf: 0.75, minCons: 3 },
     { slug: 'chicago', name: 'Chicago', color: '#facc15', conf: 0.83, minCons: 3 },
   ];
