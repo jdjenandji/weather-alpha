@@ -215,37 +215,25 @@ async function collect() {
         if (signalType === 'strong' && marketPrice != null && ecmwfAgrees && marketPrice <= MAX_ENTRY_PRICE) {
           const maxBet = parseFloat(process.env.POLY_MAX_BET || 20);
 
-          // Check if we already traded this city+date
-          const { data: existing } = await supabase
-            .from('trades')
-            .select('id')
-            .eq('city', city.slug)
-            .eq('target_date', dateStr)
-            .limit(1);
+          const price = marketPrice;
+          const shares = Math.floor(maxBet / price);
+          const cost = +(shares * price).toFixed(2);
 
-          if (!existing || existing.length === 0) {
-            const price = marketPrice;
-            const shares = Math.floor(maxBet / price);
-            const cost = +(shares * price).toFixed(2);
-
-            const { error: tradeErr } = await supabase.from('trades').insert({
-              city: city.slug,
-              target_date: dateStr,
-              bucket: consensusBucket,
-              price,
-              shares,
-              cost,
-              order_id: 'paper-' + Date.now(),
-              signal_type: signalType,
-              edge,
-              models_agreeing: modelsAgreeing,
-              status: 'open',
-            });
-            if (tradeErr) console.error('  trades insert error:', tradeErr.message);
-            else console.log(`  📝 Paper trade: ${city.slug} ${dateStr} ${consensusBucket} YES @ ${(price*100).toFixed(1)}¢ | ${shares} shares | $${cost}`);
-          } else {
-            console.log(`  ⏭️ Already traded ${city.slug} ${dateStr}, skipping`);
-          }
+          const { error: tradeErr } = await supabase.from('trades').insert({
+            city: city.slug,
+            target_date: dateStr,
+            bucket: consensusBucket,
+            price,
+            shares,
+            cost,
+            order_id: 'paper-' + Date.now(),
+            signal_type: signalType,
+            edge,
+            models_agreeing: modelsAgreeing,
+            status: 'open',
+          });
+          if (tradeErr) console.error('  trades insert error:', tradeErr.message);
+          else console.log(`  📝 Paper trade: ${city.slug} ${dateStr} ${consensusBucket} YES @ ${(price*100).toFixed(1)}¢ | ${shares} shares | $${cost}`);
         }
 
       } catch (err) {
