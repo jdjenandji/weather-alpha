@@ -7,6 +7,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3/dist/chartjs-plugin-annotation.min.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', system-ui, sans-serif; background: #0a0a0f; color: #e0e0e0; padding: 20px; }
@@ -84,6 +85,7 @@
   <div class="tab" onclick="switchTab('charts')">📈 Delta Charts</div>
   <div class="tab" onclick="switchTab('trades')">💰 Trades</div>
   <div class="tab" onclick="switchTab('backtest')">📊 Backtest</div>
+  <div class="tab" onclick="switchTab('drops')">🔔 Model Drops</div>
   <div class="tab" onclick="switchTab('accuracy')">🎯 Accuracy</div>
   <div class="tab" onclick="switchTab('logic')">🧠 Trading Logic</div>
 </div>
@@ -281,6 +283,11 @@
   <div id="backtestArea"><div class="card"><div class="loading">Loading...</div></div></div>
 </div>
 
+<div id="dropsTab" style="display:none">
+  <div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap" id="dropsFilters"></div>
+  <div id="dropsArea"><div class="card"><div class="loading">Loading model drops...</div></div></div>
+</div>
+
 <div id="accuracyTab" style="display:none">
   <div id="accuracyArea"><div class="card"><div class="loading">Loading accuracy data...</div></div></div>
 </div>
@@ -314,11 +321,13 @@ function switchTab(tab) {
   document.getElementById('chartsTab').style.display = tab === 'charts' ? '' : 'none';
   document.getElementById('tradesTab').style.display = tab === 'trades' ? '' : 'none';
   document.getElementById('backtestTab').style.display = tab === 'backtest' ? '' : 'none';
+  document.getElementById('dropsTab').style.display = tab === 'drops' ? '' : 'none';
   document.getElementById('accuracyTab').style.display = tab === 'accuracy' ? '' : 'none';
   document.getElementById('logicTab').style.display = tab === 'logic' ? '' : 'none';
   if (tab === 'charts') loadCharts();
   if (tab === 'trades') loadTrades();
   if (tab === 'backtest') loadBacktest();
+  if (tab === 'drops') loadDrops();
   if (tab === 'accuracy') loadAccuracy();
 }
 
@@ -1329,6 +1338,235 @@ function renderMonthlyChart(results) {
         y: { min: 0, max: 100, ticks: { color: '#555', callback: v => v + '%' }, grid: { color: '#1a1a2a' } }
       }
     }
+  });
+}
+
+// ============================================================
+// MODEL DROPS TAB — Forecast timeline showing model updates
+// ============================================================
+let dropsChart = null;
+let dropsCity = 'london';
+let dropsDate = null; // auto-pick tomorrow
+
+async function loadDrops() {
+  const area = document.getElementById('dropsArea');
+  const filtersEl = document.getElementById('dropsFilters');
+
+  // Determine dates to offer (today + next 2 days)
+  const dates = getDates();
+  if (!dropsDate) dropsDate = dates[1] || dates[0]; // default to tomorrow
+
+  // Render filter buttons
+  filtersEl.innerHTML = CITIES.map(c =>
+    `<div class="tab ${dropsCity === c.slug ? 'active' : ''}" onclick="dropsCity='${c.slug}';loadDrops()" style="font-size:0.8em">${c.flag} ${c.name}</div>`
+  ).join('') +
+  `<span style="color:#444;margin:0 4px">|</span>` +
+  dates.map(d =>
+    `<div class="tab ${dropsDate === d ? 'active' : ''}" onclick="dropsDate='${d}';loadDrops()" style="font-size:0.8em">${d.slice(5)}</div>`
+  ).join('');
+
+  const city = CITIES.find(c => c.slug === dropsCity);
+  if (!city) return;
+
+  // Fetch all forecast snapshots for this city+date
+  const { data, error } = await sb
+    .from('forecasts')
+    .select('model, temp_value, bucket, collected_at, lead_days')
+    .eq('city', dropsCity)
+    .eq('target_date', dropsDate)
+    .order('collected_at', { ascending: true });
+
+  if (error || !data || data.length === 0) {
+    area.innerHTML = `<div class="card" style="text-align:center;padding:40px">
+      <div style="font-size:1.5em;margin-bottom:8px">🔔</div>
+      <div style="color:#888">${error ? 'Error: ' + error.message : `No forecast data yet for ${city.name} on ${dropsDate}`}</div>
+    </div>`;
+    return;
+  }
+
+  const u = city.unit === 'F' ? '°F' : '°C';
+
+  // Group by model
+  const byModel = {};
+  for (const row of data) {
+    if (!byModel[row.model]) byModel[row.model] = [];
+    byModel[row.model].push(row);
+  }
+
+  // Detect drops (value changes)
+  const drops = [];
+  for (const [model, rows] of Object.entries(byModel)) {
+    let prev = null;
+    for (const row of rows) {
+      if (prev && Math.abs(row.temp_value - prev.temp_value) > 0.05) {
+        drops.push({
+          model,
+          time: row.collected_at,
+          from: prev.temp_value,
+          to: row.temp_value,
+          fromBucket: prev.bucket,
+          toBucket: row.bucket,
+          delta: row.temp_value - prev.temp_value,
+          bucketChanged: prev.bucket !== row.bucket,
+        });
+      }
+      prev = row;
+    }
+  }
+
+  // Build HTML
+  let html = '';
+
+  // Timeline chart
+  html += `<div class="card" style="margin-bottom:16px">
+    <div style="font-size:1.1em;font-weight:700;margin-bottom:4px">${city.flag} ${city.name} — ${dropsDate}</div>
+    <div style="font-size:0.8em;color:#666;margin-bottom:12px">Forecast snapshots over time · Each point is a collector reading</div>
+    <canvas id="dropsChart" height="280"></canvas>
+  </div>`;
+
+  // Drops log
+  html += `<div class="card">
+    <div style="font-size:1em;font-weight:700;margin-bottom:12px">🔔 Forecast Changes (${drops.length})</div>`;
+
+  if (drops.length === 0) {
+    html += `<div style="color:#666;font-size:0.85em">No forecast shifts detected yet for this date.</div>`;
+  } else {
+    html += `<div style="display:flex;flex-direction:column;gap:6px">`;
+    for (const d of drops.reverse()) {
+      const time = new Date(d.time).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+      const color = d.bucketChanged ? '#f87171' : '#facc15';
+      const icon = d.bucketChanged ? '🚨' : '⚠️';
+      const arrow = d.delta > 0 ? '↑' : '↓';
+      html += `<div style="display:flex;align-items:center;gap:10px;padding:6px 10px;background:#0a0a12;border-radius:6px;border-left:3px solid ${color}">
+        <span style="font-size:1.1em">${icon}</span>
+        <span style="color:#888;font-size:0.8em;min-width:50px">${time}z</span>
+        <span style="font-weight:700;text-transform:uppercase;min-width:55px;font-size:0.85em">${d.model}</span>
+        <span style="font-size:0.9em">${d.from.toFixed(1)} → ${d.to.toFixed(1)}${u}</span>
+        <span style="color:${d.delta > 0 ? '#4ade80' : '#60a5fa'};font-size:0.85em">${arrow}${Math.abs(d.delta).toFixed(2)}</span>
+        ${d.bucketChanged ? `<span style="background:#3b1111;color:#f87171;padding:1px 6px;border-radius:4px;font-size:0.75em">BUCKET FLIP: ${d.fromBucket} → ${d.toBucket}</span>` : ''}
+      </div>`;
+    }
+    html += `</div>`;
+  }
+  html += `</div>`;
+
+  // Model drop schedule reference
+  html += `<div style="margin-top:12px;color:#555;font-size:0.75em;text-align:center">
+    ECMWF: 00z ~05:30 · 12z ~17:30 &nbsp;|&nbsp; GFS: 00z ~04:00 · 06z ~10:00 · 12z ~16:00 · 18z ~22:00 &nbsp;|&nbsp; ICON: 00z ~04:00 · 06z ~10:00 · 12z ~16:00 · 18z ~22:00
+  </div>`;
+
+  area.innerHTML = html;
+
+  // Render chart
+  const canvas = document.getElementById('dropsChart');
+  if (!canvas || typeof Chart === 'undefined') return;
+
+  if (dropsChart) { dropsChart.destroy(); dropsChart = null; }
+
+  const modelColors = { ecmwf: '#4ade80', gfs: '#60a5fa', icon: '#facc15' };
+
+  // Build datasets
+  const datasets = Object.entries(byModel).map(([model, rows]) => ({
+    label: model.toUpperCase(),
+    data: rows.map(r => ({ x: new Date(r.collected_at), y: r.temp_value })),
+    borderColor: modelColors[model] || '#888',
+    backgroundColor: modelColors[model] || '#888',
+    borderWidth: 2,
+    pointRadius: 3,
+    pointHoverRadius: 6,
+    tension: 0.1,
+    stepped: 'before',
+  }));
+
+  // Add bucket boundary lines
+  const allVals = data.map(d => d.temp_value);
+  const minVal = Math.floor(Math.min(...allVals)) - 1;
+  const maxVal = Math.ceil(Math.max(...allVals)) + 1;
+  const annotations = {};
+  for (let b = minVal; b <= maxVal; b++) {
+    const boundary = city.unit === 'F' ? Math.floor(b / 2) * 2 : b;
+    const yVal = city.unit === 'F' ? boundary + 0.5 : boundary + 0.5;
+    annotations[`bucket_${b}`] = {
+      type: 'line',
+      yMin: yVal,
+      yMax: yVal,
+      borderColor: 'rgba(255,255,255,0.06)',
+      borderWidth: 1,
+      borderDash: [4, 4],
+      label: {
+        display: b === Math.round((minVal + maxVal) / 2),
+        content: `${boundary}${u} bucket`,
+        position: 'start',
+        color: '#444',
+        font: { size: 10 },
+      },
+    };
+  }
+
+  // Add drop window bands
+  const dropWindowDefs = [
+    { label: 'ECMWF 00z', hour: 5, dur: 0.75, color: 'rgba(74,222,128,0.06)' },
+    { label: 'GFS/ICON 06z', hour: 10, dur: 0.75, color: 'rgba(96,165,250,0.06)' },
+    { label: 'GFS/ICON 12z', hour: 16, dur: 0.75, color: 'rgba(96,165,250,0.06)' },
+    { label: 'ECMWF 12z', hour: 17.33, dur: 0.75, color: 'rgba(74,222,128,0.06)' },
+    { label: 'GFS/ICON 18z', hour: 22, dur: 0.75, color: 'rgba(96,165,250,0.06)' },
+    { label: 'GFS/ICON 00z', hour: 4, dur: 0.5, color: 'rgba(96,165,250,0.06)' },
+  ];
+
+  // Use the date range from data
+  const firstTime = new Date(data[0].collected_at);
+  const baseDate = firstTime.toISOString().slice(0, 10);
+
+  for (const w of dropWindowDefs) {
+    const xMin = new Date(baseDate + 'T00:00:00Z');
+    xMin.setUTCHours(Math.floor(w.hour), (w.hour % 1) * 60);
+    const xMax = new Date(xMin.getTime() + w.dur * 3600000);
+    annotations[`win_${w.label}`] = {
+      type: 'box',
+      xMin, xMax,
+      backgroundColor: w.color,
+      borderWidth: 0,
+      label: {
+        display: true,
+        content: w.label,
+        position: { x: 'center', y: 'start' },
+        color: '#555',
+        font: { size: 9 },
+      },
+    };
+  }
+
+  dropsChart = new Chart(canvas, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      interaction: { mode: 'nearest', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#888' } },
+        tooltip: {
+          callbacks: {
+            title: ctx => new Date(ctx[0].parsed.x).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC',
+            label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}${u} → ${getBucket(ctx.parsed.y, city.unit)}`,
+          },
+        },
+        annotation: { annotations },
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: { unit: 'hour', displayFormats: { hour: 'HH:mm' }, tooltipFormat: 'HH:mm' },
+          ticks: { color: '#888' },
+          grid: { color: '#1e1e2e' },
+          title: { display: true, text: 'UTC', color: '#666' },
+        },
+        y: {
+          ticks: { color: '#888', callback: v => v.toFixed(1) + u },
+          grid: { color: '#1e1e2e' },
+          title: { display: true, text: `Forecast ${u}`, color: '#666' },
+        },
+      },
+    },
   });
 }
 
