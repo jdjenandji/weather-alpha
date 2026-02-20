@@ -88,6 +88,7 @@
   <div class="tab" onclick="switchTab('drops')">🔔 Model Drops</div>
   <div class="tab" onclick="switchTab('efficiency')">⏱️ Market Lag</div>
   <div class="tab" onclick="switchTab('accuracy')">🕐 Accuracy by Run</div>
+  <div class="tab" onclick="switchTab('00z')">🌅 00z Backtest</div>
   <div class="tab" onclick="switchTab('logic')">🧠 Trading Logic</div>
 </div>
 
@@ -320,6 +321,10 @@
   <div id="accuracyArea"><div class="card"><div class="loading">Loading accuracy data...</div></div></div>
 </div>
 
+<div id="00zTab" style="display:none">
+  <div id="backtest00zArea"><div class="card"><div class="loading">Loading 00z backtest...</div></div></div>
+</div>
+
 <div id="tradesTab" style="display:none">
   <div id="tradesStats" class="summary-bar" style="margin-bottom:16px"></div>
   <div id="tradesArea">
@@ -356,7 +361,9 @@ function switchTab(tab) {
   document.getElementById('efficiencyTab').style.display = tab === 'efficiency' ? '' : 'none';
   document.getElementById('dropsTab').style.display = tab === 'drops' ? '' : 'none';
   document.getElementById('accuracyTab').style.display = tab === 'accuracy' ? '' : 'none';
+  document.getElementById('00zTab').style.display = tab === '00z' ? '' : 'none';
   document.getElementById('logicTab').style.display = tab === 'logic' ? '' : 'none';
+  if (tab === '00z') load00zBacktest();
   if (tab === 'charts') loadCharts();
   if (tab === 'trades') loadTrades();
   if (tab === 'backtest') loadBacktest();
@@ -1853,6 +1860,257 @@ async function loadDrops() {
       },
     },
   });
+}
+
+// ============================================================
+// 00z BACKTEST TAB — ECMWF London morning run P&L simulation
+// ============================================================
+let backtest00zLoaded = false;
+let backtest00zChart = null;
+
+async function load00zBacktest() {
+  if (backtest00zLoaded) return;
+  const area = document.getElementById('backtest00zArea');
+
+  area.innerHTML = '<div class="card"><div class="loading">Fetching 90 days of ECMWF 00z forecasts + actuals...</div></div>';
+
+  try {
+    // Fetch ECMWF Previous Runs: Day 1 = 00z morning run (12h before latest 12z)
+    const fcRes = await fetch(
+      `https://previous-runs-api.open-meteo.com/v1/forecast?latitude=51.5053&longitude=0.0553` +
+      `&hourly=temperature_2m_previous_day1&models=ecmwf_ifs025&timezone=Europe/London&past_days=90&forecast_days=0`
+    );
+    const fcData = await fcRes.json();
+    if (fcData.error) throw new Error(fcData.reason);
+
+    // Compute daily max
+    const dailyMax = {};
+    for (let i = 0; i < fcData.hourly.time.length; i++) {
+      const v = fcData.hourly.temperature_2m_previous_day1[i];
+      if (v == null) continue;
+      const d = fcData.hourly.time[i].slice(0, 10);
+      if (!dailyMax[d] || v > dailyMax[d]) dailyMax[d] = v;
+    }
+
+    const dates = Object.keys(dailyMax).sort();
+
+    // Fetch ERA5 actuals
+    const archRes = await fetch(
+      `https://archive-api.open-meteo.com/v1/archive?latitude=51.5053&longitude=0.0553` +
+      `&daily=temperature_2m_max&timezone=Europe/London&start_date=${dates[0]}&end_date=${dates[dates.length-1]}`
+    );
+    const archData = await archRes.json();
+    const actuals = {};
+    if (archData.daily) {
+      archData.daily.time.forEach((d, i) => { if (archData.daily.temperature_2m_max[i] != null) actuals[d] = archData.daily.temperature_2m_max[i]; });
+    }
+
+    // Build results
+    const results = [];
+    for (const date of dates) {
+      const fc = dailyMax[date];
+      const actual = actuals[date];
+      if (fc == null || actual == null) continue;
+      const fcBucket = `${Math.round(fc)}°C`;
+      const actualBucket = `${Math.round(actual)}°C`;
+      const match = fcBucket === actualBucket;
+      const error = Math.abs(fc - actual);
+      results.push({ date, fc, actual, fcBucket, actualBucket, match, error });
+    }
+
+    const wins = results.filter(r => r.match).length;
+    const total = results.length;
+    const rate = (wins / total * 100).toFixed(1);
+    const mae = (results.reduce((s, r) => s + r.error, 0) / total).toFixed(2);
+
+    // Monthly breakdown
+    const byMonth = {};
+    for (const r of results) {
+      const m = r.date.slice(0, 7);
+      if (!byMonth[m]) byMonth[m] = { wins: 0, total: 0, errors: [] };
+      byMonth[m].total++;
+      if (r.match) byMonth[m].wins++;
+      byMonth[m].errors.push(r.error);
+    }
+
+    // Build HTML
+    let html = '';
+
+    // Header
+    html += `<div class="card" style="margin-bottom:16px;border-left:3px solid #4ade80">
+      <div style="font-size:1.2em;font-weight:700;margin-bottom:4px">🌅 ECMWF London D+0 — Morning 00z Run</div>
+      <div style="font-size:0.85em;color:#888;margin-bottom:16px">
+        The 00z run drops ~05:30 UTC. Trading window: 05:30 → ~13:00 UTC (London daily high).
+        <br>90-day backtest using real forecast snapshots from Previous Runs API.
+      </div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap">
+        <div style="background:#0a0a12;border-radius:8px;padding:12px 20px;text-align:center">
+          <div style="font-size:0.7em;color:#666">BUCKET MATCH</div>
+          <div style="font-size:1.8em;font-weight:700;color:${rate >= 60 ? '#4ade80' : '#facc15'}">${rate}%</div>
+          <div style="font-size:0.75em;color:#666">${wins}/${total} days</div>
+        </div>
+        <div style="background:#0a0a12;border-radius:8px;padding:12px 20px;text-align:center">
+          <div style="font-size:0.7em;color:#666">MAE</div>
+          <div style="font-size:1.8em;font-weight:700;color:#60a5fa">${mae}°C</div>
+        </div>
+        <div style="background:#0a0a12;border-radius:8px;padding:12px 20px;text-align:center">
+          <div style="font-size:0.7em;color:#666">BREAKEVEN</div>
+          <div style="font-size:1.8em;font-weight:700;color:#facc15">${(wins/total*100).toFixed(0)}¢</div>
+          <div style="font-size:0.75em;color:#666">max entry price</div>
+        </div>
+      </div>
+    </div>`;
+
+    // P&L table
+    const entryPrices = [0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60];
+    html += `<div class="card" style="margin-bottom:16px">
+      <div style="font-size:1em;font-weight:700;margin-bottom:12px">💰 P&L by Entry Price ($1/share)</div>
+      <div style="font-size:0.8em;color:#666;margin-bottom:8px">If you could enter at this price every day for 90 days, what's the result?</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">`;
+
+    for (const ep of entryPrices) {
+      const pnl = results.reduce((s, r) => s + (r.match ? (1 - ep) : -ep), 0);
+      const edge = (wins / total) - ep;
+      const color = edge > 0.15 ? '#4ade80' : edge > 0.05 ? '#facc15' : edge > 0 ? '#fb923c' : '#f87171';
+      const bg = edge > 0.15 ? '#0f3d0f' : edge > 0.05 ? '#3d3d0f' : edge > 0 ? '#3d2d0f' : '#3d0f0f';
+
+      html += `<div style="background:${bg};border:1px solid ${color}33;border-radius:8px;padding:8px 12px;text-align:center;min-width:80px">
+        <div style="font-size:0.7em;color:#888">Entry ${(ep*100).toFixed(0)}¢</div>
+        <div style="font-size:1.2em;font-weight:700;color:${color}">${edge > 0 ? '+' : ''}${(edge*100).toFixed(1)}%</div>
+        <div style="font-size:0.75em;color:${pnl >= 0 ? '#4ade80' : '#f87171'}">$${pnl.toFixed(0)}</div>
+      </div>`;
+    }
+    html += `</div></div>`;
+
+    // Monthly breakdown
+    html += `<div class="card" style="margin-bottom:16px">
+      <div style="font-size:1em;font-weight:700;margin-bottom:12px">📅 Monthly Breakdown</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">`;
+
+    for (const [month, s] of Object.entries(byMonth).sort()) {
+      const mRate = (s.wins / s.total * 100).toFixed(0);
+      const mMae = (s.errors.reduce((a, b) => a + b, 0) / s.errors.length).toFixed(2);
+      const color = mRate >= 70 ? '#4ade80' : mRate >= 55 ? '#facc15' : '#f87171';
+
+      html += `<div style="background:#0a0a12;border:1px solid #1e1e2e;border-radius:8px;padding:10px 14px;text-align:center;min-width:90px">
+        <div style="font-size:0.75em;color:#888">${month}</div>
+        <div style="font-size:1.4em;font-weight:700;color:${color}">${mRate}%</div>
+        <div style="font-size:0.7em;color:#666">${s.wins}/${s.total} · MAE ${mMae}</div>
+      </div>`;
+    }
+    html += `</div></div>`;
+
+    // Charts: accuracy over time + error distribution
+    html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+      <div class="card"><div style="font-weight:700;margin-bottom:8px">📈 Rolling Accuracy (14-day)</div><canvas id="rolling00z" height="200"></canvas></div>
+      <div class="card"><div style="font-weight:700;margin-bottom:8px">📐 Error Distribution</div><canvas id="errorDist00z" height="200"></canvas></div>
+    </div>`;
+
+    // Day-by-day results table
+    html += `<div class="card">
+      <div style="font-size:1em;font-weight:700;margin-bottom:8px">📋 Day-by-Day Results</div>
+      <div style="max-height:400px;overflow-y:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:0.8em">
+        <thead><tr style="border-bottom:1px solid #2e2e3e;position:sticky;top:0;background:#12121a">
+          <th style="text-align:left;padding:4px 6px;color:#888">Date</th>
+          <th style="text-align:center;padding:4px 6px;color:#888">00z Fcst</th>
+          <th style="text-align:center;padding:4px 6px;color:#888">Bucket</th>
+          <th style="text-align:center;padding:4px 6px;color:#888">Actual</th>
+          <th style="text-align:center;padding:4px 6px;color:#888">Bucket</th>
+          <th style="text-align:center;padding:4px 6px;color:#888">Δ°C</th>
+          <th style="text-align:center;padding:4px 6px;color:#888">Result</th>
+        </tr></thead><tbody>`;
+
+    for (const r of [...results].reverse()) {
+      const errColor = r.error < 0.3 ? '#4ade80' : r.error < 0.6 ? '#facc15' : '#f87171';
+      html += `<tr style="border-bottom:1px solid #1a1a2a">
+        <td style="padding:3px 6px">${r.date}</td>
+        <td style="text-align:center;padding:3px 6px">${r.fc.toFixed(1)}°C</td>
+        <td style="text-align:center;padding:3px 6px;color:#60a5fa">${r.fcBucket}</td>
+        <td style="text-align:center;padding:3px 6px">${r.actual.toFixed(1)}°C</td>
+        <td style="text-align:center;padding:3px 6px;color:#a78bfa">${r.actualBucket}</td>
+        <td style="text-align:center;padding:3px 6px;color:${errColor}">${r.error.toFixed(2)}</td>
+        <td style="text-align:center;padding:3px 6px">${r.match ? '✅' : '❌'}</td>
+      </tr>`;
+    }
+    html += `</tbody></table></div></div>`;
+
+    area.innerHTML = html;
+
+    // Render charts
+    if (typeof Chart !== 'undefined') {
+      // Rolling 14-day accuracy
+      const rollingCanvas = document.getElementById('rolling00z');
+      if (rollingCanvas) {
+        const window = 14;
+        const rollingData = [];
+        for (let i = window - 1; i < results.length; i++) {
+          const slice = results.slice(i - window + 1, i + 1);
+          const winRate = slice.filter(r => r.match).length / slice.length * 100;
+          rollingData.push({ x: new Date(results[i].date), y: winRate });
+        }
+
+        new Chart(rollingCanvas, {
+          type: 'line',
+          data: { datasets: [{
+            label: '14-day rolling accuracy',
+            data: rollingData,
+            borderColor: '#4ade80', backgroundColor: 'rgba(74,222,128,0.1)',
+            borderWidth: 2, pointRadius: 1, fill: true, tension: 0.3,
+          }]},
+          options: {
+            responsive: true,
+            plugins: {
+              legend: { display: false },
+              annotation: { annotations: {
+                breakeven: { type: 'line', yMin: 63.3, yMax: 63.3, borderColor: 'rgba(250,204,21,0.4)', borderWidth: 1, borderDash: [4,4],
+                  label: { display: true, content: '63.3% avg', position: 'end', color: '#666', font: { size: 9 } } },
+              }},
+            },
+            scales: {
+              x: { type: 'time', time: { unit: 'week' }, ticks: { color: '#888' }, grid: { color: '#1e1e2e' } },
+              y: { min: 20, max: 100, ticks: { color: '#888', callback: v => v+'%' }, grid: { color: '#1e1e2e' } },
+            },
+          },
+        });
+      }
+
+      // Error distribution
+      const errCanvas = document.getElementById('errorDist00z');
+      if (errCanvas) {
+        const bins = [
+          { label: '<0.25', min: 0, max: 0.25 },
+          { label: '0.25-0.5', min: 0.25, max: 0.5 },
+          { label: '0.5-0.75', min: 0.5, max: 0.75 },
+          { label: '0.75-1.0', min: 0.75, max: 1.0 },
+          { label: '1.0-1.5', min: 1.0, max: 1.5 },
+          { label: '≥1.5', min: 1.5, max: 99 },
+        ];
+        const counts = bins.map(b => results.filter(r => r.error >= b.min && r.error < b.max).length);
+        const colors = ['#4ade80', '#86efac', '#facc15', '#fb923c', '#f87171', '#dc2626'];
+
+        new Chart(errCanvas, {
+          type: 'bar',
+          data: {
+            labels: bins.map(b => b.label + '°C'),
+            datasets: [{ data: counts, backgroundColor: colors, borderRadius: 4 }],
+          },
+          options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { ticks: { color: '#888' }, grid: { display: false } },
+              y: { ticks: { color: '#888' }, grid: { color: '#1e1e2e' } },
+            },
+          },
+        });
+      }
+    }
+
+    backtest00zLoaded = true;
+  } catch (e) {
+    area.innerHTML = `<div class="card" style="color:#f87171;padding:20px">Error: ${e.message}</div>`;
+  }
 }
 
 let accuracyLoaded = false;
