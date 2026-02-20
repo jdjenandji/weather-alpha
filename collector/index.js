@@ -143,7 +143,8 @@ async function collect() {
 
   const now = new Date();
   const dates = [];
-  for (let i = 0; i <= 2; i++) {
+  // D+0 only — D+1/D+2 have no real edge (accuracy drops 20-45pp)
+  for (let i = 0; i <= 0; i++) {
     const d = new Date(now);
     d.setUTCDate(d.getUTCDate() + i);
     dates.push(d.toISOString().slice(0, 10));
