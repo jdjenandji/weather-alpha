@@ -407,7 +407,24 @@ async function fetchMarketLive(slug, dateStr) {
   } catch { return null; }
 }
 
-function renderCard(city, dateStr, forecasts, market) {
+async function fetchModelTimes(slug, dateStr) {
+  try {
+    const { data } = await sb
+      .from('forecasts')
+      .select('model, collected_at')
+      .eq('city', slug)
+      .eq('target_date', dateStr)
+      .order('collected_at', { ascending: false })
+      .limit(20);
+    if (!data) return {};
+    // Latest collected_at per model
+    const times = {};
+    data.forEach(r => { if (!times[r.model]) times[r.model] = r.collected_at; });
+    return times;
+  } catch { return {}; }
+}
+
+function renderCard(city, dateStr, forecasts, market, modelTimes) {
   const u = city.unit === "F" ? "°F" : "°C";
   const models = Object.entries(forecasts).filter(([k,v]) => v != null);
 
@@ -472,7 +489,9 @@ function renderCard(city, dateStr, forecasts, market) {
     const isCons = bucket === consensus;
     const isEcmwf = model === 'ecmwf';
     const border = isEcmwf ? 'border:1px solid #4ade8044;' : '';
-    html += `<div class="model-box" style="${border}"><div class="model-name">${model}${isEcmwf ? ' ★' : ''}</div><div class="model-val ${isCons?'agree':'disagree'}">${val.toFixed(1)}${u}</div><div class="model-bucket ${isCons?'agree':'disagree'}">→ ${bucket}</div></div>`;
+    const mTime = (modelTimes || {})[model];
+    const mTimeStr = mTime ? new Date(mTime).toLocaleString('en-GB', { hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'UTC' }) + ' UTC' : '';
+    html += `<div class="model-box" style="${border}"><div class="model-name">${model}${isEcmwf ? ' ★' : ''}</div><div class="model-val ${isCons?'agree':'disagree'}">${val.toFixed(1)}${u}</div><div class="model-bucket ${isCons?'agree':'disagree'}">→ ${bucket}</div>${mTimeStr ? '<div style="font-size:0.6em;color:#444;margin-top:3px">⏱ '+mTimeStr+'</div>' : ''}</div>`;
   }
   html += `</div>`;
 
@@ -510,11 +529,12 @@ async function refresh() {
   for (const dateStr of dates) {
     for (const city of CITIES) {
       try {
-        const [forecasts, market] = await Promise.all([
+        const [forecasts, market, modelTimes] = await Promise.all([
           fetchForecastsLive(city.slug, city.unit, dateStr),
           fetchMarketLive(city.slug, dateStr),
+          fetchModelTimes(city.slug, dateStr),
         ]);
-        const result = renderCard(city, dateStr, forecasts, market);
+        const result = renderCard(city, dateStr, forecasts, market, modelTimes);
         cards.push(result);
         if (result.signal === "strong") strong++;
         if (result.signal === "marginal") marginal++;
