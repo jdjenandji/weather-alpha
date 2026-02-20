@@ -86,6 +86,7 @@
   <div class="tab" onclick="switchTab('trades')">💰 Trades</div>
   <div class="tab" onclick="switchTab('backtest')">📊 Backtest</div>
   <div class="tab" onclick="switchTab('drops')">🔔 Model Drops</div>
+  <div class="tab" onclick="switchTab('efficiency')">⏱️ Market Lag</div>
   <div class="tab" onclick="switchTab('accuracy')">🕐 Accuracy by Run</div>
   <div class="tab" onclick="switchTab('logic')">🧠 Trading Logic</div>
 </div>
@@ -305,6 +306,11 @@
   <div id="backtestArea"><div class="card"><div class="loading">Loading...</div></div></div>
 </div>
 
+<div id="efficiencyTab" style="display:none">
+  <div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap" id="effFilters"></div>
+  <div id="effArea"><div class="card"><div class="loading">Loading market efficiency data...</div></div></div>
+</div>
+
 <div id="dropsTab" style="display:none">
   <div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap" id="dropsFilters"></div>
   <div id="dropsArea"><div class="card"><div class="loading">Loading model drops...</div></div></div>
@@ -347,12 +353,14 @@ function switchTab(tab) {
   document.getElementById('chartsTab').style.display = tab === 'charts' ? '' : 'none';
   document.getElementById('tradesTab').style.display = tab === 'trades' ? '' : 'none';
   document.getElementById('backtestTab').style.display = tab === 'backtest' ? '' : 'none';
+  document.getElementById('efficiencyTab').style.display = tab === 'efficiency' ? '' : 'none';
   document.getElementById('dropsTab').style.display = tab === 'drops' ? '' : 'none';
   document.getElementById('accuracyTab').style.display = tab === 'accuracy' ? '' : 'none';
   document.getElementById('logicTab').style.display = tab === 'logic' ? '' : 'none';
   if (tab === 'charts') loadCharts();
   if (tab === 'trades') loadTrades();
   if (tab === 'backtest') loadBacktest();
+  if (tab === 'efficiency') loadEfficiency();
   if (tab === 'drops') loadDrops();
   if (tab === 'accuracy') loadAccuracy();
 }
@@ -1377,6 +1385,250 @@ function renderMonthlyChart(results) {
 // ============================================================
 // MODEL DROPS TAB — Forecast timeline showing model updates
 // ============================================================
+// ============================================================
+// MARKET LAG TAB — How fast does the market react to model drops?
+// ============================================================
+let effChart = null;
+let effCity = 'london';
+
+async function loadEfficiency() {
+  const area = document.getElementById('effArea');
+  const filtersEl = document.getElementById('effFilters');
+  const city = CITIES.find(c => c.slug === effCity);
+
+  filtersEl.innerHTML = CITIES.map(c =>
+    `<div class="tab ${effCity === c.slug ? 'active' : ''}" onclick="effCity='${c.slug}';loadEfficiency()" style="font-size:0.8em">${c.flag} ${c.name}</div>`
+  ).join('');
+
+  // Get all resolved dates (from trades or just dates with both forecasts + market prices)
+  const { data: forecasts } = await sb.from('forecasts')
+    .select('target_date, model, temp_value, bucket, collected_at')
+    .eq('city', effCity)
+    .order('collected_at', { ascending: true });
+
+  const { data: prices } = await sb.from('market_prices')
+    .select('target_date, bucket, price, collected_at')
+    .eq('city', effCity)
+    .order('collected_at', { ascending: true });
+
+  if (!forecasts?.length || !prices?.length) {
+    area.innerHTML = `<div class="card" style="text-align:center;padding:40px">
+      <div style="font-size:1.5em;margin-bottom:8px">⏱️</div>
+      <div style="color:#888">Not enough data yet. Need market prices + forecasts for the same dates.</div>
+      <div style="color:#555;font-size:0.85em;margin-top:8px">The collector stores market prices every 15 min. After a few days, this tab will show how quickly the market absorbs new forecast information.</div>
+    </div>`;
+    return;
+  }
+
+  // Group forecasts by target_date → snapshots with consensus bucket over time
+  const forecastsByDate = {};
+  for (const f of forecasts) {
+    if (!forecastsByDate[f.target_date]) forecastsByDate[f.target_date] = [];
+    forecastsByDate[f.target_date].push(f);
+  }
+
+  // Group prices by target_date → bucket → [{time, price}]
+  const pricesByDate = {};
+  for (const p of prices) {
+    if (!pricesByDate[p.target_date]) pricesByDate[p.target_date] = {};
+    if (!pricesByDate[p.target_date][p.bucket]) pricesByDate[p.target_date][p.bucket] = [];
+    pricesByDate[p.target_date][p.bucket].push({ time: p.collected_at, price: p.price });
+  }
+
+  // Find dates with enough data (both forecasts and prices over time)
+  const dates = Object.keys(pricesByDate).filter(d => forecastsByDate[d]?.length > 0).sort().reverse();
+
+  if (dates.length === 0) {
+    area.innerHTML = `<div class="card" style="text-align:center;padding:40px;color:#888">No overlapping forecast + price data found.</div>`;
+    return;
+  }
+
+  let html = `<div style="margin-bottom:16px;color:#888;font-size:0.85em">
+    ⏱️ Shows how the market price of the ECMWF-predicted bucket evolves over time, relative to model drop windows.
+    <br>If the market is slow to react, there's a trading window after each drop.
+  </div>`;
+
+  // Show the most recent date with a chart
+  const targetDate = dates[0];
+
+  // Find ECMWF consensus bucket at each snapshot
+  const fcSnapshots = forecastsByDate[targetDate];
+  const ecmwfSnapshots = fcSnapshots.filter(f => f.model === 'ecmwf');
+  const latestEcmwfBucket = ecmwfSnapshots.length > 0 ? ecmwfSnapshots[ecmwfSnapshots.length - 1].bucket : null;
+
+  if (!latestEcmwfBucket || !pricesByDate[targetDate]?.[latestEcmwfBucket]) {
+    area.innerHTML = `<div class="card" style="padding:20px;color:#888">No price history for ECMWF bucket "${latestEcmwfBucket}" on ${targetDate}</div>`;
+    return;
+  }
+
+  const bucketPrices = pricesByDate[targetDate][latestEcmwfBucket];
+
+  // Build chart: price of ECMWF bucket over time
+  html += `<div class="card" style="margin-bottom:16px">
+    <div style="font-size:1.1em;font-weight:700;margin-bottom:4px">${city.flag} ${city.name} — ${targetDate}</div>
+    <div style="font-size:0.8em;color:#666;margin-bottom:12px">Market price of <strong>${latestEcmwfBucket}</strong> (ECMWF predicted bucket) over time</div>
+    <canvas id="effChart" height="280"></canvas>
+  </div>`;
+
+  // Also show all available dates as a table summary
+  html += `<div class="card">
+    <div style="font-size:1em;font-weight:700;margin-bottom:12px">📋 Price Movement Summary</div>
+    <div style="font-size:0.8em;color:#666;margin-bottom:8px">How did the ECMWF bucket price change from first observation to last?</div>
+    <table style="width:100%;border-collapse:collapse;font-size:0.85em">
+      <thead><tr style="border-bottom:1px solid #2e2e3e">
+        <th style="text-align:left;padding:6px;color:#888">Date</th>
+        <th style="text-align:left;padding:6px;color:#888">ECMWF Bucket</th>
+        <th style="text-align:center;padding:6px;color:#888">First Price</th>
+        <th style="text-align:center;padding:6px;color:#888">Last Price</th>
+        <th style="text-align:center;padding:6px;color:#888">Δ</th>
+        <th style="text-align:center;padding:6px;color:#888">Snapshots</th>
+      </tr></thead><tbody>`;
+
+  for (const d of dates.slice(0, 10)) {
+    const ecmwf = forecastsByDate[d]?.filter(f => f.model === 'ecmwf');
+    const bucket = ecmwf?.length > 0 ? ecmwf[ecmwf.length - 1].bucket : '?';
+    const bp = pricesByDate[d]?.[bucket];
+    if (!bp || bp.length < 2) continue;
+
+    const first = bp[0];
+    const last = bp[bp.length - 1];
+    const delta = last.price - first.price;
+    const deltaColor = delta > 0.05 ? '#4ade80' : delta < -0.05 ? '#f87171' : '#888';
+
+    html += `<tr style="border-bottom:1px solid #1e1e2e;cursor:pointer" onclick="effDate='${d}';renderEffChart('${d}')">
+      <td style="padding:6px">${d}</td>
+      <td style="padding:6px">${bucket}</td>
+      <td style="text-align:center;padding:6px">${(first.price*100).toFixed(1)}¢</td>
+      <td style="text-align:center;padding:6px">${(last.price*100).toFixed(1)}¢</td>
+      <td style="text-align:center;padding:6px;color:${deltaColor};font-weight:600">${delta > 0 ? '+' : ''}${(delta*100).toFixed(1)}¢</td>
+      <td style="text-align:center;padding:6px;color:#666">${bp.length}</td>
+    </tr>`;
+  }
+
+  html += `</tbody></table></div>`;
+
+  area.innerHTML = html;
+
+  // Store data globally for re-rendering chart on date click
+  window._effData = { forecastsByDate, pricesByDate, city };
+  renderEffChart(targetDate);
+}
+
+function renderEffChart(targetDate) {
+  const { forecastsByDate, pricesByDate, city } = window._effData || {};
+  if (!forecastsByDate || !pricesByDate) return;
+
+  const canvas = document.getElementById('effChart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  if (effChart) { effChart.destroy(); effChart = null; }
+
+  const ecmwfSnapshots = (forecastsByDate[targetDate] || []).filter(f => f.model === 'ecmwf');
+  const latestBucket = ecmwfSnapshots.length > 0 ? ecmwfSnapshots[ecmwfSnapshots.length - 1].bucket : null;
+  if (!latestBucket) return;
+
+  const bucketPrices = pricesByDate[targetDate]?.[latestBucket] || [];
+  if (bucketPrices.length === 0) return;
+
+  // Price line
+  const priceData = bucketPrices.map(p => ({ x: new Date(p.time), y: p.price * 100 }));
+
+  // ECMWF forecast change markers
+  const fcMarkers = [];
+  let prevVal = null;
+  for (const f of ecmwfSnapshots) {
+    if (prevVal !== null && Math.abs(f.temp_value - prevVal) > 0.05) {
+      fcMarkers.push({ x: new Date(f.collected_at), y: null, label: `ECMWF: ${prevVal.toFixed(1)}→${f.temp_value.toFixed(1)}` });
+    }
+    prevVal = f.temp_value;
+  }
+
+  // Drop window annotations
+  const baseDate = targetDate;
+  const prevDate = new Date(new Date(targetDate).getTime() - 86400000).toISOString().slice(0, 10);
+  const annotations = {};
+
+  // Model drop windows for both prev day and target day
+  const windows = [
+    { label: 'ECMWF 12z (D-1)', date: prevDate, hour: 17.33, color: 'rgba(74,222,128,0.08)' },
+    { label: 'GFS 18z (D-1)', date: prevDate, hour: 22, color: 'rgba(96,165,250,0.08)' },
+    { label: 'GFS 00z', date: baseDate, hour: 4, color: 'rgba(96,165,250,0.08)' },
+    { label: 'ECMWF 00z', date: baseDate, hour: 5.5, color: 'rgba(74,222,128,0.08)' },
+    { label: 'GFS 06z', date: baseDate, hour: 10, color: 'rgba(96,165,250,0.08)' },
+  ];
+
+  for (const w of windows) {
+    const xMin = new Date(w.date + 'T00:00:00Z');
+    xMin.setUTCHours(Math.floor(w.hour), (w.hour % 1) * 60);
+    const xMax = new Date(xMin.getTime() + 45 * 60000);
+    annotations[`win_${w.label}`] = {
+      type: 'box', xMin, xMax,
+      backgroundColor: w.color, borderWidth: 0,
+      label: { display: true, content: w.label, position: { x: 'center', y: 'start' }, color: '#555', font: { size: 9 } },
+    };
+  }
+
+  // ECMWF change markers as vertical lines
+  for (let i = 0; i < fcMarkers.length; i++) {
+    annotations[`fc_${i}`] = {
+      type: 'line', xMin: fcMarkers[i].x, xMax: fcMarkers[i].x,
+      borderColor: '#4ade80', borderWidth: 1, borderDash: [4, 4],
+      label: { display: true, content: fcMarkers[i].label, position: 'start', color: '#4ade80', font: { size: 9 } },
+    };
+  }
+
+  const datasets = [{
+    label: `${latestBucket} price`,
+    data: priceData,
+    borderColor: '#60a5fa',
+    backgroundColor: 'rgba(96,165,250,0.1)',
+    borderWidth: 2,
+    pointRadius: 2,
+    pointHoverRadius: 5,
+    fill: true,
+    tension: 0.2,
+  }];
+
+  // Update card title
+  const titleEl = canvas.parentElement?.querySelector('div:first-child');
+  if (titleEl) titleEl.textContent = `${city.flag} ${city.name} — ${targetDate}`;
+  const subtitleEl = canvas.parentElement?.querySelector('div:nth-child(2)');
+  if (subtitleEl) subtitleEl.innerHTML = `Market price of <strong>${latestBucket}</strong> (ECMWF predicted bucket) over time`;
+
+  effChart = new Chart(canvas, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      interaction: { mode: 'nearest', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: ctx => new Date(ctx[0].parsed.x).toLocaleString('en-GB', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC',
+            label: ctx => `${ctx.parsed.y.toFixed(1)}¢`,
+          },
+        },
+        annotation: { annotations },
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: { unit: 'hour', displayFormats: { hour: 'MMM d HH:mm' } },
+          ticks: { color: '#888', maxRotation: 45 },
+          grid: { color: '#1e1e2e' },
+          title: { display: true, text: 'UTC', color: '#666' },
+        },
+        y: {
+          min: 0,
+          ticks: { color: '#888', callback: v => v.toFixed(0) + '¢' },
+          grid: { color: '#1e1e2e' },
+          title: { display: true, text: 'Market price', color: '#666' },
+        },
+      },
+    },
+  });
+}
+
 let dropsChart = null;
 let dropsCity = 'london';
 let dropsDate = null; // auto-pick tomorrow
