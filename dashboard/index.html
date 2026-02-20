@@ -112,7 +112,7 @@
         <div style="display:flex;flex-direction:column;gap:8px;font-size:0.9em">
           <div>1️⃣ <strong style="color:#4ade80">ECMWF must agree</strong> — If ECMWF disagrees with the consensus bucket, skip. ECMWF is the best model for all Tier 1 cities.</div>
           <div>2️⃣ <strong style="color:#facc15">Per-city consensus threshold</strong> — London needs ≥1/3, Paris and Chicago need 3/3.</div>
-          <div>3️⃣ <strong style="color:#60a5fa">Edge > 15%</strong> — Model confidence minus market price must exceed 15% for a strong signal.</div>
+          <div>3️⃣ <strong style="color:#60a5fa">Lead-time-dependent confidence</strong> — Model confidence is based on real 90-day accuracy data from Previous Runs API. D+0 ≫ D+1 ≫ D+2. Edge = confidence − market price, must exceed 15%.</div>
           <div>4️⃣ <strong style="color:#fb923c">One trade per city per date</strong> — No doubling down.</div>
           <div>5️⃣ <strong style="color:#a78bfa">Monitor for shifts</strong> — If consensus breaks after entry, flag as BROKEN.</div>
         </div>
@@ -128,25 +128,14 @@
           <span style="background:#0f3d0f;color:#4ade80;padding:3px 10px;border-radius:6px;font-size:0.8em;font-weight:600">PRIMARY</span>
         </div>
         <div style="font-size:0.85em;color:#aaa;margin-bottom:10px">Station: EGLC (London City Airport) · 1°C buckets</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
-            <div style="font-size:0.7em;color:#666">MIN CONSENSUS</div>
-            <div style="font-size:1.3em;font-weight:700;color:#4ade80">≥1/3</div>
-          </div>
-          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
-            <div style="font-size:0.7em;color:#666">ECMWF ALONE</div>
-            <div style="font-size:1.3em;font-weight:700;color:#4ade80">85%</div>
-          </div>
-          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
-            <div style="font-size:0.7em;color:#666">≥1/3 RATE</div>
-            <div style="font-size:1.3em;font-weight:700;color:#4ade80">75%</div>
-          </div>
-          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
-            <div style="font-size:0.7em;color:#666">3/3 RATE</div>
-            <div style="font-size:1.3em;font-weight:700;color:#4ade80">90%</div>
-          </div>
-        </div>
-        <div style="margin-top:10px;font-size:0.8em;color:#555">MAE: 0.17°C · Triggers 93% of days · Last 30d: 93% · Best market by far</div>
+        <div style="font-size:0.75em;color:#888;margin-bottom:4px">Real accuracy (90-day Previous Runs backfill)</div>
+        <table style="width:100%;border-collapse:collapse;font-size:0.8em;text-align:center">
+          <tr style="color:#666"><td></td><td>D+0</td><td>D+1</td><td>D+2</td></tr>
+          <tr><td style="text-align:left;color:#888">ECMWF</td><td style="color:#4ade80;font-weight:700">85.6%</td><td style="color:#facc15">63.3%</td><td style="color:#f87171">55.6%</td></tr>
+          <tr><td style="text-align:left;color:#888">≥2/3</td><td style="color:#4ade80;font-weight:700">83.3%</td><td style="color:#f87171">57.5%</td><td style="color:#f87171">55.1%</td></tr>
+          <tr><td style="text-align:left;color:#888">3/3</td><td style="color:#4ade80;font-weight:700">90.6%</td><td style="color:#facc15">68.0%</td><td style="color:#facc15">65.4%</td></tr>
+        </table>
+        <div style="margin-top:8px;font-size:0.8em;color:#555">MAE D+0: 0.17°C · Min consensus: ≥1/3 · Best market by far</div>
       </div>
 
       <div class="card" style="border-left:3px solid #60a5fa">
@@ -155,25 +144,14 @@
           <span style="background:#1e1e2e;color:#facc15;padding:3px 10px;border-radius:6px;font-size:0.8em;font-weight:600">3/3 ONLY</span>
         </div>
         <div style="font-size:0.85em;color:#aaa;margin-bottom:10px">Station: LFPG (CDG Airport) · 1°C buckets</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
-            <div style="font-size:0.7em;color:#666">MIN CONSENSUS</div>
-            <div style="font-size:1.3em;font-weight:700;color:#facc15">3/3</div>
-          </div>
-          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
-            <div style="font-size:0.7em;color:#666">ECMWF ALONE</div>
-            <div style="font-size:1.3em;font-weight:700;color:#facc15">67%</div>
-          </div>
-          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
-            <div style="font-size:0.7em;color:#666">≥2/3 RATE</div>
-            <div style="font-size:1.3em;font-weight:700;color:#f87171">65%</div>
-          </div>
-          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
-            <div style="font-size:0.7em;color:#666">3/3 RATE</div>
-            <div style="font-size:1.3em;font-weight:700;color:#facc15">75%</div>
-          </div>
-        </div>
-        <div style="margin-top:10px;font-size:0.8em;color:#555">MAE: 0.29°C · 3/3 triggers 22% of days · Declining trend: Nov 86%→Feb 59%</div>
+        <div style="font-size:0.75em;color:#888;margin-bottom:4px">Real accuracy (90-day Previous Runs backfill)</div>
+        <table style="width:100%;border-collapse:collapse;font-size:0.8em;text-align:center">
+          <tr style="color:#666"><td></td><td>D+0</td><td>D+1</td><td>D+2</td></tr>
+          <tr><td style="text-align:left;color:#888">ECMWF</td><td style="color:#facc15">67.8%</td><td style="color:#f87171">48.9%</td><td style="color:#f87171">30.0%</td></tr>
+          <tr><td style="text-align:left;color:#888">≥2/3</td><td style="color:#facc15">66.2%</td><td style="color:#f87171">43.8%</td><td style="color:#f87171">32.4%</td></tr>
+          <tr><td style="text-align:left;color:#888">3/3</td><td style="color:#facc15">76.2%</td><td style="color:#f87171">47.1%</td><td style="color:#f87171">33.3%</td></tr>
+        </table>
+        <div style="margin-top:8px;font-size:0.8em;color:#555">MAE D+0: 0.29°C · Min consensus: 3/3 · D+1/D+2 barely above chance</div>
       </div>
 
       <div class="card" style="border-left:3px solid #facc15">
@@ -182,25 +160,14 @@
           <span style="background:#1e1e2e;color:#facc15;padding:3px 10px;border-radius:6px;font-size:0.8em;font-weight:600">3/3 ONLY</span>
         </div>
         <div style="font-size:0.85em;color:#aaa;margin-bottom:10px">Station: KORD (O'Hare Airport) · 2°F buckets</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
-            <div style="font-size:0.7em;color:#666">MIN CONSENSUS</div>
-            <div style="font-size:1.3em;font-weight:700;color:#facc15">3/3</div>
-          </div>
-          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
-            <div style="font-size:0.7em;color:#666">ECMWF ALONE</div>
-            <div style="font-size:1.3em;font-weight:700;color:#4ade80">79%</div>
-          </div>
-          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
-            <div style="font-size:0.7em;color:#666">≥2/3 RATE</div>
-            <div style="font-size:1.3em;font-weight:700;color:#f87171">66%</div>
-          </div>
-          <div style="background:#0a0a12;border-radius:6px;padding:8px;text-align:center">
-            <div style="font-size:0.7em;color:#666">3/3 RATE</div>
-            <div style="font-size:1.3em;font-weight:700;color:#4ade80">83%</div>
-          </div>
-        </div>
-        <div style="margin-top:10px;font-size:0.8em;color:#555">MAE: 0.42°F · 3/3 triggers 13% of days · GFS is terrible here (25% match)</div>
+        <div style="font-size:0.75em;color:#888;margin-bottom:4px">Real accuracy (90-day Previous Runs backfill)</div>
+        <table style="width:100%;border-collapse:collapse;font-size:0.8em;text-align:center">
+          <tr style="color:#666"><td></td><td>D+0</td><td>D+1</td><td>D+2</td></tr>
+          <tr><td style="text-align:left;color:#888">ECMWF</td><td style="color:#facc15">77.8%</td><td style="color:#f87171">32.2%</td><td style="color:#f87171">16.7%</td></tr>
+          <tr><td style="text-align:left;color:#888">≥2/3</td><td style="color:#facc15">65.6%</td><td style="color:#f87171">27.3%</td><td style="color:#f87171">23.4%</td></tr>
+          <tr><td style="text-align:left;color:#888">3/3</td><td style="color:#4ade80">81.8%</td><td style="color:#f87171">16.7%</td><td style="color:#f87171">12.5%</td></tr>
+        </table>
+        <div style="margin-top:8px;font-size:0.8em;color:#555">MAE D+0: 0.42°F · Min consensus: 3/3 · D+1+ is a coin flip — 2°F buckets too hard</div>
       </div>
 
     </div>
@@ -305,9 +272,13 @@ const SUPABASE_KEY = 'sb_publishable_6TopOsnadhqteb8xltZiZw_epDDV-cm';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const CITIES = [
-  { name: "London", slug: "london", unit: "C", conf1: 0.75, conf2: 0.83, conf3: 0.90, minConsensus: 1, tier: 'primary', flag: '🇬🇧' },
-  { name: "Paris", slug: "paris", unit: "C", conf2: 0.65, conf3: 0.75, minConsensus: 3, tier: 'secondary', flag: '🇫🇷' },
-  { name: "Chicago", slug: "chicago", unit: "F", conf2: 0.66, conf3: 0.83, minConsensus: 3, tier: 'secondary', flag: '🇺🇸' },
+  // Real accuracy from 90-day Previous Runs backfill: conf[leadDays][agreement]
+  { name: "London", slug: "london", unit: "C", minConsensus: 1, tier: 'primary', flag: '🇬🇧',
+    conf: { 0: { 1: 0.81, 2: 0.83, 3: 0.91 }, 1: { 1: 0.57, 2: 0.58, 3: 0.68 }, 2: { 1: 0.52, 2: 0.55, 3: 0.65 } } },
+  { name: "Paris", slug: "paris", unit: "C", minConsensus: 3, tier: 'secondary', flag: '🇫🇷',
+    conf: { 0: { 1: 0.61, 2: 0.66, 3: 0.76 }, 1: { 1: 0.42, 2: 0.44, 3: 0.47 }, 2: { 1: 0.32, 2: 0.32, 3: 0.33 } } },
+  { name: "Chicago", slug: "chicago", unit: "F", minConsensus: 3, tier: 'secondary', flag: '🇺🇸',
+    conf: { 0: { 1: 0.70, 2: 0.66, 3: 0.82 }, 1: { 1: 0.30, 2: 0.27, 3: 0.17 }, 2: { 1: 0.22, 2: 0.23, 3: 0.13 } } },
 ];
 
 const charts = {};
@@ -329,6 +300,11 @@ function switchTab(tab) {
   if (tab === 'backtest') loadBacktest();
   if (tab === 'drops') loadDrops();
   if (tab === 'accuracy') loadAccuracy();
+}
+
+function getConf(city, leadDays, agreement) {
+  const ld = Math.min(leadDays, 2);
+  return city.conf?.[ld]?.[Math.min(agreement, 3)] || 0;
 }
 
 function getBucket(val, unit) {
@@ -529,7 +505,9 @@ function renderCard(city, dateStr, forecasts, market, modelTimes) {
   const meetsThreshold = agreement >= (city.minConsensus || 2);
   const tradeable = ecmwfAgrees && meetsThreshold;
 
-  const modelConf = agreement >= 3 ? city.conf3 : agreement >= 2 ? city.conf2 : (city.conf1 || 0);
+  // Compute lead days for this card
+  const leadDays = Math.max(0, Math.round((new Date(dateStr + 'T12:00:00Z') - new Date()) / 86400000));
+  const modelConf = getConf(city, leadDays, agreement);
   const targetMarket = market?.find(m => m.title === consensus);
   const edge = targetMarket && tradeable ? modelConf - targetMarket.price : 0;
 
@@ -597,7 +575,7 @@ function renderCard(city, dateStr, forecasts, market, modelTimes) {
   }
 
   if (targetMarket && tradeable) {
-    html += `<div class="edge-box"><div><div class="edge-label">TARGET</div><div>${targetMarket.title} @ ${(targetMarket.price*100).toFixed(1)}¢</div></div><div><div class="edge-label">MODEL CONF</div><div>${(modelConf*100).toFixed(0)}%</div></div><div><div class="edge-label">EDGE</div><div class="edge-value ${edge > 0 ? 'edge-positive' : 'edge-negative'}">${edge > 0 ? '+' : ''}${(edge*100).toFixed(1)}%</div></div></div>`;
+    html += `<div class="edge-box"><div><div class="edge-label">TARGET</div><div>${targetMarket.title} @ ${(targetMarket.price*100).toFixed(1)}¢</div></div><div><div class="edge-label">CONF (D+${leadDays}, ${agreement}/3)</div><div>${(modelConf*100).toFixed(0)}%</div></div><div><div class="edge-label">EDGE</div><div class="edge-value ${edge > 0 ? 'edge-positive' : 'edge-negative'}">${edge > 0 ? '+' : ''}${(edge*100).toFixed(1)}%</div></div></div>`;
 
     // Mark for depth loading after render
     html += `<div class="depth-slot" data-city="${city.slug}" data-date="${dateStr}" data-conf="${modelConf}" style="margin-top:8px;font-size:0.8em;color:#444">Loading depth...</div>`;
@@ -978,9 +956,9 @@ async function renderRealisticPnl() {
     <div style="font-size:0.8em;color:#666;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #1e1e2e">💰 Realistic Entry Prices (from Polymarket CLOB)</div>`;
 
   const cityConfigs = [
-    { slug: 'london', name: 'London', color: '#4ade80', conf: 0.83, minCons: 1 },
-    { slug: 'paris', name: 'Paris', color: '#60a5fa', conf: 0.75, minCons: 3 },
-    { slug: 'chicago', name: 'Chicago', color: '#facc15', conf: 0.83, minCons: 3 },
+    { slug: 'london', name: 'London', color: '#4ade80', conf: 0.83, minCons: 1 },  // D+0 ≥2/3 conf
+    { slug: 'paris', name: 'Paris', color: '#60a5fa', conf: 0.66, minCons: 3 },   // D+0 ≥2/3 conf (real)
+    { slug: 'chicago', name: 'Chicago', color: '#facc15', conf: 0.66, minCons: 3 }, // D+0 ≥2/3 conf (real)
   ];
 
   const allCityData = [];

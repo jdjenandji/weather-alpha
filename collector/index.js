@@ -8,11 +8,33 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const MAX_BET = parseFloat(process.env.POLY_MAX_BET || 20);
 
 const CITIES = [
-  { name: "London", slug: "london", lat: 51.5053, lon: 0.0553, unit: "C", tz: "Europe/London", conf1: 0.75, conf2: 0.83, conf3: 0.90, minConsensus: 1 },
-  { name: "Paris", slug: "paris", lat: 49.0097, lon: 2.5479, unit: "C", tz: "Europe/Paris", conf2: 0.65, conf3: 0.75, minConsensus: 3 },
-  { name: "Chicago", slug: "chicago", lat: 41.9742, lon: -87.9073, unit: "F", tz: "America/Chicago", conf2: 0.66, conf3: 0.83, minConsensus: 3 },
+  // Confidence values from 90-day Previous Runs backfill (real forecasts, not reanalysis)
+  // conf[leadDays][agreement] = bucket match rate
+  { name: "London", slug: "london", lat: 51.5053, lon: 0.0553, unit: "C", tz: "Europe/London", minConsensus: 1,
+    conf: {
+      0: { 1: 0.81, 2: 0.83, 3: 0.91 },
+      1: { 1: 0.57, 2: 0.58, 3: 0.68 },
+      2: { 1: 0.52, 2: 0.55, 3: 0.65 },
+    }},
+  { name: "Paris", slug: "paris", lat: 49.0097, lon: 2.5479, unit: "C", tz: "Europe/Paris", minConsensus: 3,
+    conf: {
+      0: { 1: 0.61, 2: 0.66, 3: 0.76 },
+      1: { 1: 0.42, 2: 0.44, 3: 0.47 },
+      2: { 1: 0.32, 2: 0.32, 3: 0.33 },
+    }},
+  { name: "Chicago", slug: "chicago", lat: 41.9742, lon: -87.9073, unit: "F", tz: "America/Chicago", minConsensus: 3,
+    conf: {
+      0: { 1: 0.70, 2: 0.66, 3: 0.82 },
+      1: { 1: 0.30, 2: 0.27, 3: 0.17 },
+      2: { 1: 0.22, 2: 0.23, 3: 0.13 },
+    }},
   // Buenos Aires removed — 60% consensus rate, not tradeable
 ];
+
+function getConf(city, leadDays, agreement) {
+  const ld = Math.min(leadDays, 2); // clamp to max we have data for
+  return city.conf?.[ld]?.[Math.min(agreement, 3)] || 0;
+}
 
 function getBucket(val, unit) {
   if (unit === "F") {
@@ -200,7 +222,7 @@ async function collect() {
         const ecmwfAgrees = ecmwfBucket === consensusBucket;
 
         const marketPrice = market?.find(m => m.title === consensusBucket)?.price ?? null;
-        const modelConf = modelsAgreeing >= 3 ? city.conf3 : modelsAgreeing >= 2 ? city.conf2 : (city.conf1 || 0);
+        const modelConf = getConf(city, leadDays, modelsAgreeing);
         const meetsConsensus = modelsAgreeing >= city.minConsensus && ecmwfAgrees;
         const edge = (marketPrice != null && meetsConsensus) ? modelConf - marketPrice : null;
 
