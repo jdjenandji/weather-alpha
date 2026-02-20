@@ -594,52 +594,67 @@ async function computeAccuracy() {
 
 // Check if this is a targeted ECMWF drop run
 // Run extra checks around known drop times: 00z at ~05:30 UTC, 12z at ~17:30 UTC
-async function checkEcmwfDrop() {
-  const hour = new Date().getUTCHours();
-  const min = new Date().getUTCMinutes();
-  
-  // Only check in the drop windows: 05:25-05:50 and 17:25-17:50
-  const in00zWindow = hour === 5 && min >= 25 && min <= 50;
-  const in12zWindow = hour === 17 && min >= 25 && min <= 50;
-  
-  if (!in00zWindow && !in12zWindow) return false;
-  
-  const runLabel = in00zWindow ? '00z' : '12z';
-  console.log(`[ecmwf-watch] In ${runLabel} drop window. Checking for new data...`);
+// Model drop windows (UTC). Each model releases ~3.5-4h after init time.
+// ECMWF: 2x/day — 00z (~05:30), 12z (~17:30)
+// GFS:   4x/day — 00z (~04:00), 06z (~10:00), 12z (~16:00), 18z (~22:00)
+// ICON:  4x/day — 00z (~04:00), 06z (~10:00), 12z (~16:00), 18z (~22:00)
+const DROP_WINDOWS = [
+  // { hour, minFrom, minTo, models[], runLabel }
+  // 04:00-04:30 — GFS 00z, ICON 00z
+  { hour: 4, minFrom: 0, minTo: 30, models: ['gfs', 'icon'], run: '00z' },
+  // 05:20-06:05 — ECMWF 00z (+ GFS/ICON may still be updating)
+  { hour: 5, minFrom: 20, minTo: 59, models: ['ecmwf', 'gfs', 'icon'], run: '00z' },
+  { hour: 6, minFrom: 0, minTo: 5, models: ['ecmwf'], run: '00z' },
+  // 09:45-10:30 — GFS 06z, ICON 06z
+  { hour: 9, minFrom: 45, minTo: 59, models: ['gfs', 'icon'], run: '06z' },
+  { hour: 10, minFrom: 0, minTo: 30, models: ['gfs', 'icon'], run: '06z' },
+  // 15:45-16:30 — GFS 12z, ICON 12z
+  { hour: 15, minFrom: 45, minTo: 59, models: ['gfs', 'icon'], run: '12z' },
+  { hour: 16, minFrom: 0, minTo: 30, models: ['gfs', 'icon'], run: '12z' },
+  // 17:20-18:05 — ECMWF 12z
+  { hour: 17, minFrom: 20, minTo: 59, models: ['ecmwf', 'gfs', 'icon'], run: '12z' },
+  { hour: 18, minFrom: 0, minTo: 5, models: ['ecmwf'], run: '12z' },
+  // 21:45-22:30 — GFS 18z, ICON 18z
+  { hour: 21, minFrom: 45, minTo: 59, models: ['gfs', 'icon'], run: '18z' },
+  { hour: 22, minFrom: 0, minTo: 30, models: ['gfs', 'icon'], run: '18z' },
+];
 
-  // Compare current ECMWF forecast to last stored value for London tomorrow
+function getActiveDropWindow(hour, min) {
+  return DROP_WINDOWS.find(w => w.hour === hour && min >= w.minFrom && min <= w.minTo);
+}
+
+async function checkModelDrops(window) {
+  console.log(`[model-watch] ${window.run} drop window. Checking: ${window.models.join(', ')}...`);
+
   const tomorrow = new Date();
   tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
   const dateStr = tomorrow.toISOString().slice(0, 10);
-
-  const { data: lastFc } = await supabase
-    .from('forecasts')
-    .select('temp_value, collected_at')
-    .eq('city', 'london')
-    .eq('target_date', dateStr)
-    .eq('model', 'ecmwf')
-    .order('collected_at', { ascending: false })
-    .limit(1);
-
-  const lastVal = lastFc?.[0]?.temp_value;
-  const lastTime = lastFc?.[0]?.collected_at;
-
-  // Fetch fresh
   const city = CITIES.find(c => c.slug === 'london');
   const forecasts = await fetchForecasts(city, dateStr);
-  const newVal = forecasts.ecmwf;
 
-  if (newVal == null) return false;
+  for (const model of window.models) {
+    const newVal = forecasts[model];
+    if (newVal == null) continue;
 
-  if (lastVal != null && Math.abs(newVal - lastVal) > 0.05) {
-    console.log(`[ecmwf-watch] 🔔 ECMWF ${runLabel} DROP DETECTED! London ${dateStr}: ${lastVal}→${newVal}°C (Δ${(newVal-lastVal).toFixed(2)})`);
-    return true;
-  } else if (lastVal != null) {
-    console.log(`[ecmwf-watch] No change (${lastVal}→${newVal}). Same run still cached.`);
-    return false;
+    const { data: lastFc } = await supabase
+      .from('forecasts')
+      .select('temp_value, collected_at')
+      .eq('city', 'london')
+      .eq('target_date', dateStr)
+      .eq('model', model)
+      .order('collected_at', { ascending: false })
+      .limit(1);
+
+    const lastVal = lastFc?.[0]?.temp_value;
+
+    if (lastVal != null && Math.abs(newVal - lastVal) > 0.05) {
+      console.log(`[model-watch] 🔔 ${model.toUpperCase()} ${window.run} DROP DETECTED! London ${dateStr}: ${lastVal}→${newVal}°C (Δ${(newVal - lastVal).toFixed(2)})`);
+    } else if (lastVal != null) {
+      console.log(`[model-watch] ${model.toUpperCase()}: no change (${lastVal}→${newVal})`);
+    } else {
+      console.log(`[model-watch] ${model.toUpperCase()}: first reading ${newVal}°C`);
+    }
   }
-
-  return false; // first run, no comparison
 }
 
 async function main() {
@@ -647,25 +662,24 @@ async function main() {
   const min = new Date().getUTCMinutes();
 
   // Full collection every 15 min (0, 15, 30, 45)
-  const isFullRun = min % 15 < 5; // within 5 min of a 15-min mark
+  const isFullRun = min % 15 < 5;
 
-  // ECMWF drop windows: 05:20-06:00 and 17:20-18:00 — run every time
-  const inDropWindow = (hour === 5 && min >= 20) || (hour === 6 && min <= 5)
-                    || (hour === 17 && min >= 20) || (hour === 18 && min <= 5);
+  // Check if we're in any model drop window
+  const dropWindow = getActiveDropWindow(hour, min);
 
-  if (!isFullRun && !inDropWindow) {
+  if (!isFullRun && !dropWindow) {
     console.log(`[scheduler] Off-cycle run (${hour}:${String(min).padStart(2,'0')} UTC), not in drop window. Skipping.`);
     return;
   }
 
-  if (inDropWindow && !isFullRun) {
-    console.log(`[scheduler] 🔔 ECMWF drop window — running extra collection`);
+  if (dropWindow && !isFullRun) {
+    console.log(`[scheduler] 🔔 ${dropWindow.models.map(m => m.toUpperCase()).join('+')} ${dropWindow.run} drop window — running extra collection`);
   }
 
   await collect();
-  
-  if (inDropWindow) {
-    await checkEcmwfDrop();
+
+  if (dropWindow) {
+    await checkModelDrops(dropWindow);
   }
 }
 
