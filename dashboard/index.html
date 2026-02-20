@@ -474,6 +474,25 @@ function getNextModelUpdate(model) {
   return `${first.run} tmrw ~${String(first.h).padStart(2,'0')}:${String(first.m).padStart(2,'0')}`;
 }
 
+async function fetchOrderBook(slug, dateStr, bucket) {
+  try {
+    const fmtDate = formatPolymarketDate(dateStr);
+    const eventSlug = `highest-temperature-in-${slug}-on-${fmtDate}`;
+    const res = await fetch(`https://gamma-api.polymarket.com/events?slug=${eventSlug}`);
+    const data = await res.json();
+    if (!data[0]) return null;
+    const m = data[0].markets.find(m => m.groupItemTitle === bucket);
+    if (!m) return null;
+    const tokenId = JSON.parse(m.clobTokenIds)[0];
+    const ob = await fetch(`https://clob.polymarket.com/book?token_id=${tokenId}`);
+    const book = await ob.json();
+    return { asks: book.asks || [], bids: book.bids || [] };
+  } catch {
+    // CORS likely — try Supabase fallback
+    return null;
+  }
+}
+
 function renderCard(city, dateStr, forecasts, market, modelTimes) {
   const u = city.unit === "F" ? "°F" : "°C";
   const models = Object.entries(forecasts).filter(([k,v]) => v != null);
@@ -564,6 +583,9 @@ function renderCard(city, dateStr, forecasts, market, modelTimes) {
 
   if (targetMarket && tradeable) {
     html += `<div class="edge-box"><div><div class="edge-label">TARGET</div><div>${targetMarket.title} @ ${(targetMarket.price*100).toFixed(1)}¢</div></div><div><div class="edge-label">MODEL CONF</div><div>${(modelConf*100).toFixed(0)}%</div></div><div><div class="edge-label">EDGE</div><div class="edge-value ${edge > 0 ? 'edge-positive' : 'edge-negative'}">${edge > 0 ? '+' : ''}${(edge*100).toFixed(1)}%</div></div></div>`;
+
+    // Mark for depth loading after render
+    html += `<div class="depth-slot" data-city="${city.slug}" data-date="${dateStr}" data-conf="${modelConf}" style="margin-top:8px;font-size:0.8em;color:#444">Loading depth...</div>`;
   }
   html += `</div>`;
   return { html, signal: signalClass.includes("strong") ? "strong" : signalClass.includes("marginal") ? "marginal" : "skip", edge };
@@ -1304,9 +1326,46 @@ function renderMonthlyChart(results) {
   });
 }
 
+async function loadDepthSlots() {
+  const slots = document.querySelectorAll('.depth-slot');
+  for (const el of slots) {
+    const city = el.dataset.city;
+    const dateStr = el.dataset.date;
+    const conf = parseFloat(el.dataset.conf);
+
+    const { data: depth } = await sb.from('order_depth')
+      .select('*').eq('city', city).eq('target_date', dateStr)
+      .order('collected_at', { ascending: false }).limit(1);
+
+    if (!depth || depth.length === 0) { el.innerHTML = '<span style="color:#444">No depth data yet</span>'; continue; }
+    const d = depth[0];
+    const levels = JSON.parse(d.levels || '[]');
+    const time = new Date(d.collected_at).toLocaleString('en-GB', { hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'UTC' });
+
+    if (levels.length === 0) {
+      el.innerHTML = `<span style="color:#f87171">No asks ≤${(d.max_entry*100).toFixed(0)}¢</span> | Best ask: ${d.best_ask ? (d.best_ask*100).toFixed(1)+'¢' : '—'} <span style="color:#333">@${time}</span>`;
+      continue;
+    }
+
+    let h = `<div style="color:#666;font-size:0.9em;margin-bottom:4px">📊 AVAILABLE SIZE (with edge) <span style="color:#333">@${time} UTC</span></div>`;
+    h += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
+    for (const l of levels) {
+      const levelEdge = (conf - l.price) * 100;
+      h += `<div style="background:#0a0a12;border:1px solid #1a1a2a;border-radius:4px;padding:4px 8px;text-align:center">`;
+      h += `<div style="color:#60a5fa;font-weight:600">${(l.price*100).toFixed(1)}¢</div>`;
+      h += `<div style="color:#888">${l.size.toFixed(0)} shares</div>`;
+      h += `<div style="color:#4ade80;font-size:0.85em">+${levelEdge.toFixed(0)}% edge</div>`;
+      h += `</div>`;
+    }
+    h += '</div>';
+    h += `<div style="margin-top:4px;color:#555">Total: ${d.available_size.toFixed(0)} shares ($${d.available_cost.toFixed(0)}) across ${d.num_levels} levels</div>`;
+    el.innerHTML = h;
+  }
+}
+
 // Init
-refresh();
-setInterval(refresh, 5 * 60 * 1000);
+refresh().then(() => loadDepthSlots());
+setInterval(() => refresh().then(() => loadDepthSlots()), 5 * 60 * 1000);
 </script>
 </body>
 </html>

@@ -59,9 +59,60 @@ async function fetchMarket(city, dateStr) {
       title: m.groupItemTitle,
       price: parseFloat(JSON.parse(m.outcomePrices)[0]),
       volume: parseFloat(m.volume || "0"),
+      tokenId: JSON.parse(m.clobTokenIds)[0],
     })).sort((a, b) => b.price - a.price);
   } catch {
     return null;
+  }
+}
+
+async function fetchAndStoreDepth(city, dateStr, consensusBucket, market, modelConf) {
+  if (!consensusBucket || !market) return;
+  const target = market.find(m => m.title === consensusBucket);
+  if (!target || !target.tokenId) return;
+
+  try {
+    const res = await fetch(`https://clob.polymarket.com/book?token_id=${target.tokenId}`);
+    if (!res.ok) return;
+    const book = await res.json();
+    const asks = (book.asks || []).sort((a, b) => parseFloat(a.price) - parseFloat(b.price));
+
+    // Calculate available size at prices where we still have edge (price < modelConf)
+    const maxPrice = Math.min(modelConf, parseFloat(process.env.POLY_MAX_ENTRY || 0.50));
+    const edgeAsks = asks.filter(a => parseFloat(a.price) <= maxPrice);
+    const totalSize = edgeAsks.reduce((s, a) => s + parseFloat(a.size), 0);
+    const totalCost = edgeAsks.reduce((s, a) => s + parseFloat(a.size) * parseFloat(a.price), 0);
+    const bestAsk = asks.length > 0 ? parseFloat(asks[0].price) : null;
+    const bestAskSize = asks.length > 0 ? parseFloat(asks[0].size) : null;
+
+    // Store depth snapshot
+    const levels = edgeAsks.slice(0, 10).map(a => ({
+      price: parseFloat(a.price),
+      size: parseFloat(a.size),
+    }));
+
+    await supabase.from('order_depth').insert({
+      city: city.slug,
+      target_date: dateStr,
+      bucket: consensusBucket,
+      model_conf: modelConf,
+      max_entry: maxPrice,
+      best_ask: bestAsk,
+      best_ask_size: bestAskSize,
+      available_size: totalSize,
+      available_cost: totalCost,
+      levels: JSON.stringify(levels),
+      num_levels: edgeAsks.length,
+    });
+
+    if (totalSize > 0) {
+      console.log(`  📊 Depth ${city.slug} ${dateStr} ${consensusBucket}: ${edgeAsks.length} levels, ${totalSize.toFixed(0)} shares @ ≤${(maxPrice*100).toFixed(0)}¢ ($${totalCost.toFixed(0)})`);
+    } else {
+      console.log(`  📊 Depth ${city.slug} ${dateStr} ${consensusBucket}: no asks ≤${(maxPrice*100).toFixed(0)}¢ (best ask: ${bestAsk ? (bestAsk*100).toFixed(1)+'¢' : 'none'})`);
+    }
+  } catch (err) {
+    // Non-critical, don't fail the run
+    console.log(`  📊 Depth fetch failed for ${city.slug} ${dateStr}: ${err.message}`);
   }
 }
 
@@ -153,6 +204,11 @@ async function collect() {
           signal_type: signalType,
         });
         if (sigErr) console.error(`  signals insert error (${city.slug} ${dateStr}):`, sigErr.message);
+
+        // Fetch order book depth for tradeable signals
+        if (meetsConsensus && signalType !== 'skip') {
+          await fetchAndStoreDepth(city, dateStr, consensusBucket, market, modelConf);
+        }
 
         // PAPER TRADE on strong signals (per-city thresholds, ECMWF required)
         const MAX_ENTRY_PRICE = parseFloat(process.env.POLY_MAX_ENTRY || 0.50);
