@@ -2227,14 +2227,25 @@ async function loadD0vsD1() {
     const d0Max = dailyMax(d0Data.hourly.time, d0Data.hourly.temperature_2m);
     const d1Max = dailyMax(d1Data.hourly.time, d1Data.hourly.temperature_2m_previous_day1);
 
-    // Actuals
+    // Actuals from Weather Underground EGLC station (Polymarket resolution source)
     const allDates = [...new Set([...Object.keys(d0Max), ...Object.keys(d1Max)])].sort();
-    const archRes = await fetch(
-      `https://archive-api.open-meteo.com/v1/archive?latitude=51.5053&longitude=0.0553&daily=temperature_2m_max&timezone=Europe/London&start_date=${allDates[0]}&end_date=${allDates[allDates.length-1]}`
-    );
-    const archData = await archRes.json();
-    const actuals = {};
-    if (archData.daily) archData.daily.time.forEach((d, i) => { if (archData.daily.temperature_2m_max[i] != null) actuals[d] = archData.daily.temperature_2m_max[i]; });
+    let actuals = {};
+    try {
+      const wuRes = await fetch('wu-actuals.json');
+      if (wuRes.ok) actuals = await wuRes.json();
+    } catch {}
+    // Fallback to ERA5 for any missing dates
+    if (Object.keys(actuals).length < allDates.length) {
+      try {
+        const archRes = await fetch(
+          `https://archive-api.open-meteo.com/v1/archive?latitude=51.5053&longitude=0.0553&daily=temperature_2m_max&timezone=Europe/London&start_date=${allDates[0]}&end_date=${allDates[allDates.length-1]}`
+        );
+        const archData = await archRes.json();
+        if (archData.daily) archData.daily.time.forEach((d, i) => {
+          if (actuals[d] == null && archData.daily.temperature_2m_max[i] != null) actuals[d] = archData.daily.temperature_2m_max[i];
+        });
+      } catch {}
+    }
 
     const bkt = v => `${Math.round(v)}°C`;
 
@@ -2294,7 +2305,8 @@ async function loadD0vsD1() {
       <div style="font-size:1.2em;font-weight:700;margin-bottom:4px">🔀 Same-Day vs Night-Before — London ECMWF</div>
       <div style="font-size:0.85em;color:#888;margin-bottom:16px">
         <b>Same-day (D0)</b>: 00z run issued that morning (~05:30 UTC), forecasting today's high<br>
-        <b>Night-before (D1)</b>: 00z run from yesterday, forecasting tomorrow's high (12-24h lead)
+        <b>Night-before (D1)</b>: 00z run from yesterday, forecasting tomorrow's high (12-24h lead)<br>
+        <b>Actuals</b>: Weather Underground EGLC station (Polymarket resolution source)
       </div>
       <div style="display:flex;gap:16px;flex-wrap:wrap">
         <div style="background:#0a0a12;border:1px solid #4ade8033;border-radius:8px;padding:12px 20px;text-align:center">
