@@ -383,7 +383,7 @@ function formatPolymarketDate(dateStr) {
 
 function getDates() {
   const dates = [];
-  for (let i = 0; i <= 0; i++) { // D+0 only — D+1/D+2 have no real edge
+  for (let i = 0; i <= 1; i++) { // D+0 + D+1
     const d = new Date(); d.setUTCDate(d.getUTCDate() + i);
     dates.push(d.toISOString().slice(0, 10));
   }
