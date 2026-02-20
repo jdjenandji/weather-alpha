@@ -84,6 +84,7 @@
   <div class="tab" onclick="switchTab('charts')">📈 Delta Charts</div>
   <div class="tab" onclick="switchTab('trades')">💰 Trades</div>
   <div class="tab" onclick="switchTab('backtest')">📊 Backtest</div>
+  <div class="tab" onclick="switchTab('accuracy')">🎯 Accuracy</div>
   <div class="tab" onclick="switchTab('logic')">🧠 Trading Logic</div>
 </div>
 
@@ -280,6 +281,10 @@
   <div id="backtestArea"><div class="card"><div class="loading">Loading...</div></div></div>
 </div>
 
+<div id="accuracyTab" style="display:none">
+  <div id="accuracyArea"><div class="card"><div class="loading">Loading accuracy data...</div></div></div>
+</div>
+
 <div id="tradesTab" style="display:none">
   <div id="tradesStats" class="summary-bar" style="margin-bottom:16px"></div>
   <div id="tradesArea">
@@ -309,10 +314,12 @@ function switchTab(tab) {
   document.getElementById('chartsTab').style.display = tab === 'charts' ? '' : 'none';
   document.getElementById('tradesTab').style.display = tab === 'trades' ? '' : 'none';
   document.getElementById('backtestTab').style.display = tab === 'backtest' ? '' : 'none';
+  document.getElementById('accuracyTab').style.display = tab === 'accuracy' ? '' : 'none';
   document.getElementById('logicTab').style.display = tab === 'logic' ? '' : 'none';
   if (tab === 'charts') loadCharts();
   if (tab === 'trades') loadTrades();
   if (tab === 'backtest') loadBacktest();
+  if (tab === 'accuracy') loadAccuracy();
 }
 
 function getBucket(val, unit) {
@@ -1323,6 +1330,177 @@ function renderMonthlyChart(results) {
       }
     }
   });
+}
+
+let accuracyLoaded = false;
+async function loadAccuracy() {
+  if (accuracyLoaded) return;
+  const area = document.getElementById('accuracyArea');
+
+  // Fetch accuracy data
+  const { data, error } = await sb.from('forecast_accuracy').select('*').order('city').order('lead_days');
+  if (error || !data || data.length === 0) {
+    area.innerHTML = `<div class="card" style="text-align:center;padding:40px">
+      <div style="font-size:1.5em;margin-bottom:8px">📊</div>
+      <div style="color:#888">${error ? 'Error: ' + error.message : 'No accuracy data yet. The collector needs to run a few cycles with resolved trades to generate this.'}</div>
+      <div style="color:#555;font-size:0.85em;margin-top:8px">Data populates automatically as forecasts are collected and trades resolve against actuals.</div>
+    </div>`;
+    return;
+  }
+
+  // Group by city
+  const byCityModel = {};
+  for (const row of data) {
+    if (!byCityModel[row.city]) byCityModel[row.city] = {};
+    if (!byCityModel[row.city][row.model]) byCityModel[row.city][row.model] = {};
+    byCityModel[row.city][row.model][row.lead_days] = row;
+  }
+
+  const cityMeta = Object.fromEntries(CITIES.map(c => [c.slug, c]));
+  let html = '';
+
+  // Summary header
+  html += `<div style="margin-bottom:16px;color:#888;font-size:0.85em">
+    📡 Measured accuracy from stored forecast snapshots vs ERA5 actuals. Updated each collector run.
+  </div>`;
+
+  for (const [citySlug, models] of Object.entries(byCityModel)) {
+    const city = cityMeta[citySlug] || { name: citySlug, flag: '' };
+
+    html += `<div class="card" style="margin-bottom:16px">
+      <div style="font-size:1.1em;font-weight:700;margin-bottom:12px">${city.flag || ''} ${city.name || citySlug}</div>`;
+
+    // Individual models table
+    const individualModels = Object.keys(models).filter(m => !m.startsWith('consensus'));
+    const consensusModels = Object.keys(models).filter(m => m.startsWith('consensus')).sort();
+    const allLeadDays = [...new Set(data.filter(d => d.city === citySlug).map(d => d.lead_days))].sort((a, b) => a - b);
+
+    if (individualModels.length > 0) {
+      html += `<div style="font-size:0.85em;font-weight:600;color:#aaa;margin-bottom:6px">Model Accuracy by Lead Time</div>`;
+      html += `<table style="width:100%;border-collapse:collapse;font-size:0.85em;margin-bottom:16px">
+        <thead><tr style="border-bottom:1px solid #2e2e3e">
+          <th style="text-align:left;padding:6px;color:#888">Model</th>`;
+      for (const ld of allLeadDays) {
+        html += `<th style="text-align:center;padding:6px;color:#888">D+${ld}</th>`;
+      }
+      html += `<th style="text-align:center;padding:6px;color:#888">Samples</th></tr></thead><tbody>`;
+
+      for (const model of individualModels.sort()) {
+        html += `<tr style="border-bottom:1px solid #1e1e2e">
+          <td style="padding:6px;font-weight:600;text-transform:uppercase">${model}</td>`;
+        for (const ld of allLeadDays) {
+          const row = models[model]?.[ld];
+          if (row) {
+            const rate = (row.bucket_match_rate * 100).toFixed(1);
+            const mae = row.mae != null ? row.mae.toFixed(2) : '-';
+            const color = row.bucket_match_rate >= 0.85 ? '#4ade80' : row.bucket_match_rate >= 0.70 ? '#facc15' : '#f87171';
+            html += `<td style="text-align:center;padding:6px">
+              <div style="font-weight:700;color:${color}">${rate}%</div>
+              <div style="font-size:0.75em;color:#666">MAE ${mae}</div>
+            </td>`;
+          } else {
+            html += `<td style="text-align:center;padding:6px;color:#444">—</td>`;
+          }
+        }
+        const samples = Object.values(models[model] || {}).reduce((s, r) => Math.max(s, r.sample_size || 0), 0);
+        html += `<td style="text-align:center;padding:6px;color:#666">${samples}</td></tr>`;
+      }
+      html += `</tbody></table>`;
+    }
+
+    // Consensus table
+    if (consensusModels.length > 0) {
+      html += `<div style="font-size:0.85em;font-weight:600;color:#aaa;margin-bottom:6px">Consensus Accuracy by Lead Time</div>`;
+      html += `<table style="width:100%;border-collapse:collapse;font-size:0.85em">
+        <thead><tr style="border-bottom:1px solid #2e2e3e">
+          <th style="text-align:left;padding:6px;color:#888">Threshold</th>`;
+      for (const ld of allLeadDays) {
+        html += `<th style="text-align:center;padding:6px;color:#888">D+${ld}</th>`;
+      }
+      html += `<th style="text-align:center;padding:6px;color:#888">Samples</th></tr></thead><tbody>`;
+
+      for (const model of consensusModels) {
+        const label = model.replace('consensus_gte', '≥') + '/3';
+        html += `<tr style="border-bottom:1px solid #1e1e2e">
+          <td style="padding:6px;font-weight:600">${label}</td>`;
+        for (const ld of allLeadDays) {
+          const row = models[model]?.[ld];
+          if (row) {
+            const rate = (row.bucket_match_rate * 100).toFixed(1);
+            const color = row.bucket_match_rate >= 0.85 ? '#4ade80' : row.bucket_match_rate >= 0.70 ? '#facc15' : '#f87171';
+            html += `<td style="text-align:center;padding:6px">
+              <div style="font-weight:700;color:${color}">${rate}%</div>
+              <div style="font-size:0.75em;color:#666">n=${row.sample_size}</div>
+            </td>`;
+          } else {
+            html += `<td style="text-align:center;padding:6px;color:#444">—</td>`;
+          }
+        }
+        const samples = Object.values(models[model] || {}).reduce((s, r) => Math.max(s, r.sample_size || 0), 0);
+        html += `<td style="text-align:center;padding:6px;color:#666">${samples}</td></tr>`;
+      }
+      html += `</tbody></table>`;
+    }
+
+    html += `</div>`;
+  }
+
+  // Chart: accuracy by lead time (bar chart per city)
+  html += `<div class="card" style="margin-bottom:16px">
+    <div style="font-size:1.1em;font-weight:700;margin-bottom:12px">📉 Accuracy Decay by Lead Time</div>
+    <canvas id="accuracyChart" height="300"></canvas>
+  </div>`;
+
+  // Data freshness
+  const latest = data.reduce((max, r) => r.computed_at > max ? r.computed_at : max, '');
+  html += `<div style="text-align:center;color:#555;font-size:0.75em;margin-top:8px">
+    Last computed: ${latest ? new Date(latest).toLocaleString() : 'never'} · Updates every collector run
+  </div>`;
+
+  area.innerHTML = html;
+
+  // Render chart
+  const canvas = document.getElementById('accuracyChart');
+  if (canvas && typeof Chart !== 'undefined') {
+    const allLDs = [...new Set(data.map(d => d.lead_days))].sort((a, b) => a - b);
+    const colors = { london: '#4ade80', paris: '#60a5fa', chicago: '#facc15' };
+    const datasets = [];
+
+    for (const city of CITIES) {
+      // Use ECMWF as the representative model
+      const ecmwfData = allLDs.map(ld => {
+        const row = byCityModel[city.slug]?.ecmwf?.[ld];
+        return row ? (row.bucket_match_rate * 100) : null;
+      });
+      datasets.push({
+        label: `${city.flag} ${city.name} (ECMWF)`,
+        data: ecmwfData,
+        backgroundColor: colors[city.slug] || '#888',
+        borderRadius: 4,
+      });
+    }
+
+    new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: allLDs.map(ld => `D+${ld}`),
+        datasets,
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { labels: { color: '#888' } },
+          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(1)}%` } },
+        },
+        scales: {
+          x: { ticks: { color: '#888' }, grid: { color: '#1e1e2e' } },
+          y: { min: 50, max: 100, ticks: { color: '#888', callback: v => v + '%' }, grid: { color: '#1e1e2e' } },
+        },
+      },
+    });
+  }
+
+  accuracyLoaded = true;
 }
 
 async function loadDepthSlots() {
