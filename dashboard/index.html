@@ -1905,6 +1905,53 @@ async function load00zBacktest() {
       archData.daily.time.forEach((d, i) => { if (archData.daily.temperature_2m_max[i] != null) actuals[d] = archData.daily.temperature_2m_max[i]; });
     }
 
+    // Fetch market prices at ~05:30 UTC from Supabase
+    // We look for the earliest price snapshot on each target date for london
+    const { data: allPrices } = await sb.from('market_prices')
+      .select('target_date, bucket, price, collected_at')
+      .eq('city', 'london')
+      .order('collected_at', { ascending: true });
+
+    // Group: target_date → bucket → earliest price near 05:30 UTC
+    const priceAtDrop = {}; // date → bucket → price
+    if (allPrices) {
+      for (const p of allPrices) {
+        const h = new Date(p.collected_at).getUTCHours();
+        // Use first snapshot of the day (closest to morning)
+        if (!priceAtDrop[p.target_date]) priceAtDrop[p.target_date] = {};
+        if (!priceAtDrop[p.target_date][p.bucket]) {
+          priceAtDrop[p.target_date][p.bucket] = p.price;
+        }
+      }
+    }
+
+    // Also try Polymarket CLOB price history for recent dates without Supabase data
+    async function fetchPolyPrice(dateStr, bucket) {
+      try {
+        const months = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+        const d = new Date(dateStr + 'T00:00:00Z');
+        const slug = `highest-temperature-in-london-on-${months[d.getUTCMonth()]}-${d.getUTCDate()}-${d.getUTCFullYear()}`;
+        const res = await fetch(`https://gamma-api.polymarket.com/events?slug=${slug}`);
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (!data[0]) return null;
+        const market = data[0].markets.find(m => m.groupItemTitle === bucket);
+        if (!market) return null;
+        const tokenId = JSON.parse(market.clobTokenIds)[0];
+        const hRes = await fetch(`https://clob.polymarket.com/prices-history?market=${tokenId}&interval=all&fidelity=60`);
+        if (!hRes.ok) return null;
+        const hData = await hRes.json();
+        const dropUnix = new Date(dateStr + 'T05:30:00Z').getTime() / 1000;
+        let best = null;
+        for (const p of (hData.history || [])) {
+          if (p.t <= dropUnix + 1800) {
+            if (!best || Math.abs(p.t - dropUnix) < Math.abs(best.t - dropUnix)) best = p;
+          }
+        }
+        return best ? best.p : null;
+      } catch { return null; }
+    }
+
     // Build results
     const results = [];
     for (const date of dates) {
@@ -1915,11 +1962,25 @@ async function load00zBacktest() {
       const actualBucket = `${Math.round(actual)}°C`;
       const match = fcBucket === actualBucket;
       const error = Math.abs(fc - actual);
-      results.push({ date, fc, actual, fcBucket, actualBucket, match, error });
+      const marketPrice = priceAtDrop[date]?.[fcBucket] ?? null;
+      results.push({ date, fc, actual, fcBucket, actualBucket, match, error, marketPrice });
+    }
+
+    // For recent dates without Supabase prices, try Polymarket directly (last 30 days only, to avoid rate limits)
+    const thirtyDaysAgo = new Date(); thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    for (const r of results) {
+      if (r.marketPrice == null && new Date(r.date) >= thirtyDaysAgo) {
+        r.marketPrice = await fetchPolyPrice(r.date, r.fcBucket);
+        if (r.marketPrice != null) await new Promise(res => setTimeout(res, 200));
+      }
     }
 
     const wins = results.filter(r => r.match).length;
     const total = results.length;
+    const withPrice = results.filter(r => r.marketPrice != null);
+    const realWins = withPrice.filter(r => r.match).length;
+    const avgEntry = withPrice.length > 0 ? withPrice.reduce((s, r) => s + r.marketPrice, 0) / withPrice.length : null;
+    const realPnl = withPrice.reduce((s, r) => s + (r.match ? (1 - r.marketPrice) : -r.marketPrice), 0);
     const rate = (wins / total * 100).toFixed(1);
     const mae = (results.reduce((s, r) => s + r.error, 0) / total).toFixed(2);
 
@@ -1958,6 +2019,17 @@ async function load00zBacktest() {
           <div style="font-size:1.8em;font-weight:700;color:#facc15">${(wins/total*100).toFixed(0)}¢</div>
           <div style="font-size:0.75em;color:#666">max entry price</div>
         </div>
+        ${withPrice.length > 0 ? `
+        <div style="background:#0a0a12;border-radius:8px;padding:12px 20px;text-align:center;border:1px solid #4ade8033">
+          <div style="font-size:0.7em;color:#666">AVG PRICE @05:30</div>
+          <div style="font-size:1.8em;font-weight:700;color:#fb923c">${(avgEntry*100).toFixed(0)}¢</div>
+          <div style="font-size:0.75em;color:#666">${withPrice.length} days w/ data</div>
+        </div>
+        <div style="background:#0a0a12;border-radius:8px;padding:12px 20px;text-align:center;border:1px solid ${realPnl >= 0 ? '#4ade80' : '#f87171'}33">
+          <div style="font-size:0.7em;color:#666">REAL P&L</div>
+          <div style="font-size:1.8em;font-weight:700;color:${realPnl >= 0 ? '#4ade80' : '#f87171'}">$${realPnl >= 0 ? '+' : ''}${realPnl.toFixed(2)}</div>
+          <div style="font-size:0.75em;color:#666">${realWins}/${withPrice.length} wins · $${(realPnl/withPrice.length).toFixed(3)}/trade</div>
+        </div>` : ''}
       </div>
     </div>`;
 
@@ -2018,11 +2090,15 @@ async function load00zBacktest() {
           <th style="text-align:center;padding:4px 6px;color:#888">Actual</th>
           <th style="text-align:center;padding:4px 6px;color:#888">Bucket</th>
           <th style="text-align:center;padding:4px 6px;color:#888">Δ°C</th>
+          <th style="text-align:center;padding:4px 6px;color:#888">Mkt @05:30</th>
+          <th style="text-align:center;padding:4px 6px;color:#888">P&L</th>
           <th style="text-align:center;padding:4px 6px;color:#888">Result</th>
         </tr></thead><tbody>`;
 
     for (const r of [...results].reverse()) {
       const errColor = r.error < 0.3 ? '#4ade80' : r.error < 0.6 ? '#facc15' : '#f87171';
+      const pnl = r.marketPrice != null ? (r.match ? (1 - r.marketPrice) : -r.marketPrice) : null;
+      const pnlColor = pnl != null ? (pnl >= 0 ? '#4ade80' : '#f87171') : '#444';
       html += `<tr style="border-bottom:1px solid #1a1a2a">
         <td style="padding:3px 6px">${r.date}</td>
         <td style="text-align:center;padding:3px 6px">${r.fc.toFixed(1)}°C</td>
@@ -2030,6 +2106,8 @@ async function load00zBacktest() {
         <td style="text-align:center;padding:3px 6px">${r.actual.toFixed(1)}°C</td>
         <td style="text-align:center;padding:3px 6px;color:#a78bfa">${r.actualBucket}</td>
         <td style="text-align:center;padding:3px 6px;color:${errColor}">${r.error.toFixed(2)}</td>
+        <td style="text-align:center;padding:3px 6px;color:${r.marketPrice != null ? '#fb923c' : '#333'}">${r.marketPrice != null ? (r.marketPrice*100).toFixed(1)+'¢' : '—'}</td>
+        <td style="text-align:center;padding:3px 6px;color:${pnlColor};font-weight:${pnl != null ? '600' : '400'}">${pnl != null ? (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2) : '—'}</td>
         <td style="text-align:center;padding:3px 6px">${r.match ? '✅' : '❌'}</td>
       </tr>`;
     }
