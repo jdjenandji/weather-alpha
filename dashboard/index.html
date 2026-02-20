@@ -2202,7 +2202,7 @@ let d0d1Loaded = false;
 async function loadD0vsD1() {
   if (d0d1Loaded) return;
   const area = document.getElementById('d0d1Area');
-  area.innerHTML = '<div class="card"><div class="loading">Fetching forecasts + Polymarket historical prices... (may take ~30s)</div></div>';
+  area.innerHTML = '<div class="card"><div class="loading">Fetching D0 vs D1 forecasts + market prices...</div></div>';
 
   try {
     // Fetch Day 0 (same-day 00z) and Day 1 (night-before) from Previous Runs API
@@ -2237,32 +2237,13 @@ async function loadD0vsD1() {
     if (archData.daily) archData.daily.time.forEach((d, i) => { if (archData.daily.temperature_2m_max[i] != null) actuals[d] = archData.daily.temperature_2m_max[i]; });
 
     const bkt = v => `${Math.round(v)}°C`;
-    const MONTHS = ['january','february','march','april','may','june','july','august','september','october','november','december'];
 
-    // Helper: fetch Polymarket price at ~05:30 UTC for a given date + bucket
-    async function getPrice0530(dateStr, bucket) {
-      try {
-        const d = new Date(dateStr + 'T00:00:00Z');
-        const slug = `highest-temperature-in-london-on-${MONTHS[d.getUTCMonth()]}-${d.getUTCDate()}-${d.getUTCFullYear()}`;
-        const evRes = await fetch(`https://gamma-api.polymarket.com/events?slug=${slug}`);
-        if (!evRes.ok) return null;
-        const evData = await evRes.json();
-        if (!evData[0]) return null;
-        const numVal = parseInt(bucket);
-        const market = evData[0].markets.find(m => m.groupItemTitle === bucket || m.groupItemTitle.includes(numVal + '°'));
-        if (!market) return null;
-        const tokenId = JSON.parse(market.clobTokenIds)[0];
-        const hRes = await fetch(`https://clob.polymarket.com/prices-history?market=${tokenId}&interval=all&fidelity=60`);
-        if (!hRes.ok) return null;
-        const hData = await hRes.json();
-        const targetUnix = new Date(dateStr + 'T05:30:00Z').getTime() / 1000;
-        let best = null;
-        for (const p of (hData.history || [])) {
-          if (Math.abs(p.t - targetUnix) < 7200 && (!best || Math.abs(p.t - targetUnix) < Math.abs(best.t - targetUnix))) best = p;
-        }
-        return best ? parseFloat(best.p) : null;
-      } catch { return null; }
-    }
+    // Load pre-computed Polymarket odds at 05:30 UTC
+    let odds0530 = {};
+    try {
+      const oddsRes = await fetch('odds-0530.json');
+      if (oddsRes.ok) odds0530 = await oddsRes.json();
+    } catch {}
 
     // Build rows
     const rows = [];
@@ -2282,12 +2263,10 @@ async function loadD0vsD1() {
       });
     }
 
-    // Fetch Polymarket prices for recent dates (markets exist from ~Feb 2026)
-    area.innerHTML = '<div class="card"><div class="loading">Fetching Polymarket historical prices at 05:30 UTC...</div></div>';
+    // Merge pre-computed Polymarket prices
     for (const r of rows) {
-      if (r.date < '2026-02-01' || !r.d0Bkt) continue;
-      r.price0530 = await getPrice0530(r.date, r.d0Bkt);
-      await new Promise(res => setTimeout(res, 250));
+      const o = odds0530[r.date];
+      if (o && o.price != null) r.price0530 = o.price;
     }
 
     const d0Wins = rows.filter(r => r.d0Bkt && r.d0Match).length;
