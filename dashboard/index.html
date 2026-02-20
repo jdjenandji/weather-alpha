@@ -89,6 +89,7 @@
   <div class="tab" onclick="switchTab('efficiency')">⏱️ Market Lag</div>
   <div class="tab" onclick="switchTab('accuracy')">🕐 Accuracy by Run</div>
   <div class="tab" onclick="switchTab('00z')">🌅 00z Backtest</div>
+  <div class="tab" onclick="switchTab('d0d1')">🔀 D0 vs D1</div>
   <div class="tab" onclick="switchTab('logic')">🧠 Trading Logic</div>
 </div>
 
@@ -321,6 +322,10 @@
   <div id="accuracyArea"><div class="card"><div class="loading">Loading accuracy data...</div></div></div>
 </div>
 
+<div id="d0d1Tab" style="display:none">
+  <div id="d0d1Area"><div class="card"><div class="loading">Loading D0 vs D1 comparison...</div></div></div>
+</div>
+
 <div id="00zTab" style="display:none">
   <div id="backtest00zArea"><div class="card"><div class="loading">Loading 00z backtest...</div></div></div>
 </div>
@@ -362,8 +367,10 @@ function switchTab(tab) {
   document.getElementById('dropsTab').style.display = tab === 'drops' ? '' : 'none';
   document.getElementById('accuracyTab').style.display = tab === 'accuracy' ? '' : 'none';
   document.getElementById('00zTab').style.display = tab === '00z' ? '' : 'none';
+  document.getElementById('d0d1Tab').style.display = tab === 'd0d1' ? '' : 'none';
   document.getElementById('logicTab').style.display = tab === 'logic' ? '' : 'none';
   if (tab === '00z') load00zBacktest();
+  if (tab === 'd0d1') loadD0vsD1();
   if (tab === 'charts') loadCharts();
   if (tab === 'trades') loadTrades();
   if (tab === 'backtest') loadBacktest();
@@ -2187,6 +2194,155 @@ async function load00zBacktest() {
 
     backtest00zLoaded = true;
   } catch (e) {
+    area.innerHTML = `<div class="card" style="color:#f87171;padding:20px">Error: ${e.message}</div>`;
+  }
+}
+
+let d0d1Loaded = false;
+async function loadD0vsD1() {
+  if (d0d1Loaded) return;
+  const area = document.getElementById('d0d1Area');
+  area.innerHTML = '<div class="card"><div class="loading">Fetching same-day (D0) + night-before (D1) ECMWF forecasts...</div></div>';
+
+  try {
+    // Fetch Day 0 (same-day 00z) and Day 1 (night-before) from Previous Runs API
+    const [d0Res, d1Res] = await Promise.all([
+      fetch(`https://previous-runs-api.open-meteo.com/v1/forecast?latitude=51.5053&longitude=0.0553&hourly=temperature_2m&models=ecmwf_ifs025&timezone=Europe/London&past_days=90&forecast_days=0`),
+      fetch(`https://previous-runs-api.open-meteo.com/v1/forecast?latitude=51.5053&longitude=0.0553&hourly=temperature_2m_previous_day1&models=ecmwf_ifs025&timezone=Europe/London&past_days=90&forecast_days=0`),
+    ]);
+    const d0Data = await d0Res.json();
+    const d1Data = await d1Res.json();
+    if (d0Data.error) throw new Error(d0Data.reason);
+    if (d1Data.error) throw new Error(d1Data.reason);
+
+    // Daily max for each
+    function dailyMax(times, vals) {
+      const m = {};
+      for (let i = 0; i < times.length; i++) {
+        if (vals[i] == null) continue;
+        const d = times[i].slice(0, 10);
+        if (!m[d] || vals[i] > m[d]) m[d] = vals[i];
+      }
+      return m;
+    }
+    const d0Max = dailyMax(d0Data.hourly.time, d0Data.hourly.temperature_2m);
+    const d1Max = dailyMax(d1Data.hourly.time, d1Data.hourly.temperature_2m_previous_day1);
+
+    // Actuals
+    const allDates = [...new Set([...Object.keys(d0Max), ...Object.keys(d1Max)])].sort();
+    const archRes = await fetch(
+      `https://archive-api.open-meteo.com/v1/archive?latitude=51.5053&longitude=0.0553&daily=temperature_2m_max&timezone=Europe/London&start_date=${allDates[0]}&end_date=${allDates[allDates.length-1]}`
+    );
+    const archData = await archRes.json();
+    const actuals = {};
+    if (archData.daily) archData.daily.time.forEach((d, i) => { if (archData.daily.temperature_2m_max[i] != null) actuals[d] = archData.daily.temperature_2m_max[i]; });
+
+    const bkt = v => `${Math.round(v)}°C`;
+
+    // Build rows
+    const rows = [];
+    for (const date of allDates) {
+      const actual = actuals[date];
+      if (actual == null) continue;
+      const actualBkt = bkt(actual);
+      const d0v = d0Max[date], d1v = d1Max[date];
+      const d0Bkt = d0v != null ? bkt(d0v) : null;
+      const d1Bkt = d1v != null ? bkt(d1v) : null;
+      rows.push({
+        date, actual, actualBkt,
+        d0: d0v, d0Bkt, d0Match: d0Bkt === actualBkt,
+        d1: d1v, d1Bkt, d1Match: d1Bkt === actualBkt,
+        agree: d0Bkt && d1Bkt && d0Bkt === d1Bkt,
+      });
+    }
+
+    const d0Wins = rows.filter(r => r.d0Bkt && r.d0Match).length;
+    const d0Total = rows.filter(r => r.d0Bkt).length;
+    const d1Wins = rows.filter(r => r.d1Bkt && r.d1Match).length;
+    const d1Total = rows.filter(r => r.d1Bkt).length;
+    const agreeRows = rows.filter(r => r.agree);
+    const agreeWins = agreeRows.filter(r => r.d0Match).length;
+    const disagreeRows = rows.filter(r => r.d0Bkt && r.d1Bkt && !r.agree);
+    const d0WinsDisagree = disagreeRows.filter(r => r.d0Match).length;
+    const d1WinsDisagree = disagreeRows.filter(r => r.d1Match).length;
+
+    let html = '';
+
+    // Summary cards
+    html += `<div class="card" style="margin-bottom:16px;border-left:3px solid #a78bfa">
+      <div style="font-size:1.2em;font-weight:700;margin-bottom:4px">🔀 Same-Day vs Night-Before — London ECMWF</div>
+      <div style="font-size:0.85em;color:#888;margin-bottom:16px">
+        <b>Same-day (D0)</b>: 00z run issued that morning (~05:30 UTC), forecasting today's high<br>
+        <b>Night-before (D1)</b>: 00z run from yesterday, forecasting tomorrow's high (12-24h lead)
+      </div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap">
+        <div style="background:#0a0a12;border:1px solid #4ade8033;border-radius:8px;padding:12px 20px;text-align:center">
+          <div style="font-size:0.7em;color:#666">SAME-DAY (D0)</div>
+          <div style="font-size:1.8em;font-weight:700;color:#4ade80">${(d0Wins/d0Total*100).toFixed(1)}%</div>
+          <div style="font-size:0.75em;color:#666">${d0Wins}/${d0Total}</div>
+        </div>
+        <div style="background:#0a0a12;border:1px solid #fb923c33;border-radius:8px;padding:12px 20px;text-align:center">
+          <div style="font-size:0.7em;color:#666">NIGHT-BEFORE (D1)</div>
+          <div style="font-size:1.8em;font-weight:700;color:#fb923c">${(d1Wins/d1Total*100).toFixed(1)}%</div>
+          <div style="font-size:0.75em;color:#666">${d1Wins}/${d1Total}</div>
+        </div>
+        <div style="background:#0a0a12;border:1px solid #60a5fa33;border-radius:8px;padding:12px 20px;text-align:center">
+          <div style="font-size:0.7em;color:#666">AGREE → WIN</div>
+          <div style="font-size:1.8em;font-weight:700;color:#60a5fa">${agreeRows.length > 0 ? (agreeWins/agreeRows.length*100).toFixed(1) : '—'}%</div>
+          <div style="font-size:0.75em;color:#666">${agreeWins}/${agreeRows.length} days</div>
+        </div>
+        <div style="background:#0a0a12;border:1px solid #a78bfa33;border-radius:8px;padding:12px 20px;text-align:center">
+          <div style="font-size:0.7em;color:#666">DISAGREE</div>
+          <div style="font-size:1.4em;font-weight:700;color:#a78bfa">${disagreeRows.length} days</div>
+          <div style="font-size:0.7em;color:#666">D0 wins ${d0WinsDisagree} · D1 wins ${d1WinsDisagree}</div>
+        </div>
+      </div>
+    </div>`;
+
+    // Day-by-day table
+    html += `<div class="card">
+      <div style="font-size:1em;font-weight:700;margin-bottom:8px">📋 Day-by-Day: Night-Before vs Same-Day</div>
+      <div style="max-height:500px;overflow-y:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:0.8em">
+        <thead><tr style="border-bottom:1px solid #2e2e3e;position:sticky;top:0;background:#12121a">
+          <th style="text-align:left;padding:4px 6px;color:#888">Date</th>
+          <th style="text-align:center;padding:4px 6px;color:#fb923c">Night-Before</th>
+          <th style="text-align:center;padding:4px 6px;color:#4ade80">Same-Day</th>
+          <th style="text-align:center;padding:4px 6px;color:#a78bfa">Actual</th>
+          <th style="text-align:center;padding:4px 6px;color:#888">Result</th>
+        </tr></thead><tbody>`;
+
+    for (const r of [...rows].reverse()) {
+      const d1Color = r.d1Bkt ? (r.d1Match ? '#4ade80' : '#f87171') : '#444';
+      const d0Color = r.d0Bkt ? (r.d0Match ? '#4ade80' : '#f87171') : '#444';
+      // Highlight when D0 corrected D1's mistake
+      const corrected = r.d0Bkt && r.d1Bkt && !r.d1Match && r.d0Match;
+      const worsened = r.d0Bkt && r.d1Bkt && r.d1Match && !r.d0Match;
+      let icon = '';
+      if (r.d0Match && r.d1Match) icon = '✅✅';
+      else if (r.d0Match && !r.d1Match) icon = '🔄✅'; // D0 corrected
+      else if (!r.d0Match && r.d1Match) icon = '⚠️'; // D0 worsened
+      else icon = '❌❌';
+
+      const rowBg = corrected ? 'background:rgba(74,222,128,0.05)' : worsened ? 'background:rgba(248,113,113,0.05)' : '';
+
+      html += `<tr style="border-bottom:1px solid #1a1a2a;${rowBg}">
+        <td style="padding:3px 6px">${r.date}</td>
+        <td style="text-align:center;padding:3px 6px;color:${d1Color}">${r.d1Bkt || '—'}${r.d1 != null ? ' <span style="color:#666;font-size:0.85em">('+r.d1.toFixed(1)+')</span>' : ''}</td>
+        <td style="text-align:center;padding:3px 6px;color:${d0Color}">${r.d0Bkt || '—'}${r.d0 != null ? ' <span style="color:#666;font-size:0.85em">('+r.d0.toFixed(1)+')</span>' : ''}</td>
+        <td style="text-align:center;padding:3px 6px;color:#a78bfa">${r.actualBkt} <span style="color:#666;font-size:0.85em">(${r.actual.toFixed(1)})</span></td>
+        <td style="text-align:center;padding:3px 6px">${icon}</td>
+      </tr>`;
+    }
+    html += `</tbody></table></div>
+      <div style="margin-top:8px;font-size:0.75em;color:#666">
+        ✅✅ Both right · 🔄✅ Same-day corrected night-before · ⚠️ Same-day wrong, night-before right · ❌❌ Both wrong
+      </div>
+    </div>`;
+
+    area.innerHTML = html;
+    d0d1Loaded = true;
+  } catch(e) {
     area.innerHTML = `<div class="card" style="color:#f87171;padding:20px">Error: ${e.message}</div>`;
   }
 }
